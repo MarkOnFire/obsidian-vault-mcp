@@ -562,6 +562,29 @@ def create_server(config: VaultConfig) -> Server:
     return server
 
 
+def get_log_path() -> Path:
+    """
+    Determine the log file path.
+
+    Priority:
+    1. OBSIDIAN_VAULT_MCP_LOG env var (explicit path)
+    2. XDG_DATA_HOME/obsidian-vault-mcp/server.log (Linux/macOS standard)
+    3. ~/.local/share/obsidian-vault-mcp/server.log (fallback)
+    """
+    import os
+
+    # Check for explicit log path
+    if log_path := os.environ.get("OBSIDIAN_VAULT_MCP_LOG"):
+        return Path(log_path)
+
+    # Use XDG_DATA_HOME or default
+    data_home = os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share")
+    log_dir = Path(data_home) / "obsidian-vault-mcp"
+    log_dir.mkdir(parents=True, exist_ok=True)
+
+    return log_dir / "server.log"
+
+
 def run_server():
     """Run the MCP server."""
     # Load configuration
@@ -569,13 +592,12 @@ def run_server():
 
     # Configure logging
     log_level = getattr(logging, config.log_level.upper(), logging.INFO)
+    log_path = get_log_path()
     logging.basicConfig(
         level=log_level,
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
         handlers=[
-            logging.FileHandler(
-                "/Users/mriechers/Developer/obsidian-config/logs/obsidian-vault-mcp.log"
-            ),
+            logging.FileHandler(log_path),
             logging.StreamHandler(),
         ],
     )
