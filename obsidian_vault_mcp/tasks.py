@@ -281,6 +281,253 @@ def get_folder_task_stats(vault_reader, folder_path: str, lookback_days: int = 7
     }
 
 
+def get_weekly_summary(vault_reader, start_date: Optional[str] = None, end_date: Optional[str] = None, para_location: Optional[str] = None) -> Dict:
+    """
+    Get a weekly summary of vault activity.
+
+    Args:
+        vault_reader: VaultReader instance
+        start_date: Start date in ISO format (default: 7 days ago)
+        end_date: End date in ISO format (default: today)
+        para_location: Optional PARA location filter
+
+    Returns:
+        Dictionary with weekly summary data
+    """
+    # Parse dates
+    if end_date:
+        try:
+            end_dt = datetime.fromisoformat(end_date)
+        except ValueError:
+            end_dt = datetime.now()
+    else:
+        end_dt = datetime.now()
+
+    if start_date:
+        try:
+            start_dt = datetime.fromisoformat(start_date)
+        except ValueError:
+            start_dt = end_dt - timedelta(days=7)
+    else:
+        start_dt = end_dt - timedelta(days=7)
+
+    # Get all notes (optionally filtered by PARA location)
+    notes = vault_reader.list_notes(
+        para_location=para_location,
+        limit=5000
+    )
+
+    # Collect all tasks from all notes
+    all_tasks = []
+    notes_with_activity = []
+
+    for note_meta in notes:
+        try:
+            note_data = vault_reader.read_note(path=note_meta['path'])
+            if not note_data or not note_data.get('content'):
+                continue
+
+            tasks = TaskParser.parse_tasks(note_data['content'], note_meta['path'])
+            all_tasks.extend(tasks)
+
+            # Check for note activity in date range
+            note_modified = note_meta.get('modified') or note_meta.get('created')
+            if note_modified:
+                try:
+                    mod_dt = datetime.fromisoformat(note_modified) if isinstance(note_modified, str) else note_modified
+                    if start_dt <= mod_dt <= end_dt:
+                        notes_with_activity.append(note_meta)
+                except (ValueError, TypeError):
+                    pass
+
+        except Exception:
+            continue
+
+    # Calculate completed tasks in date range
+    completed_in_range = []
+    for task in all_tasks:
+        if task.completed and task.completion_date:
+            try:
+                comp_dt = datetime.fromisoformat(task.completion_date)
+                if start_dt <= comp_dt <= end_dt:
+                    completed_in_range.append(task)
+            except (ValueError, TypeError):
+                pass
+
+    # Group completions by project/file
+    completions_by_project = {}
+    for task in completed_in_range:
+        project = Path(task.source_file).stem
+        if project not in completions_by_project:
+            completions_by_project[project] = []
+        completions_by_project[project].append(task.to_dict())
+
+    # Group completions by day
+    completions_by_day = {}
+    for task in completed_in_range:
+        if task.completion_date:
+            day = task.completion_date[:10]  # YYYY-MM-DD
+            if day not in completions_by_day:
+                completions_by_day[day] = 0
+            completions_by_day[day] += 1
+
+    # Current active tasks
+    active_tasks = [t for t in all_tasks if not t.completed and not t.blocked]
+    blocked_tasks = [t for t in all_tasks if t.blocked and not t.completed]
+    overdue_tasks = [t for t in all_tasks if t.is_overdue()]
+
+    return {
+        'period': {
+            'start': start_dt.isoformat()[:10],
+            'end': end_dt.isoformat()[:10]
+        },
+        'para_location': para_location,
+        'summary': {
+            'tasks_completed': len(completed_in_range),
+            'notes_with_activity': len(notes_with_activity),
+            'active_tasks': len(active_tasks),
+            'blocked_tasks': len(blocked_tasks),
+            'overdue_tasks': len(overdue_tasks)
+        },
+        'completions_by_day': completions_by_day,
+        'completions_by_project': completions_by_project,
+        'completed_tasks': [t.to_dict() for t in completed_in_range],
+        'overdue_tasks': [t.to_dict() for t in overdue_tasks],
+        'active_notes': [
+            {'title': n['title'], 'path': n['path'], 'para_location': n.get('para_location')}
+            for n in notes_with_activity[:20]
+        ]
+    }
+
+
+def gather_topic(vault_reader, topic: str, include_backlinks: bool = True, max_depth: int = 1) -> Dict:
+    """
+    Gather all information on a topic from the vault.
+
+    Args:
+        vault_reader: VaultReader instance
+        topic: Topic to gather (search term, tag, or note title)
+        include_backlinks: Whether to include notes that link to matching notes
+        max_depth: How deep to follow links (1 = direct links only)
+
+    Returns:
+        Dictionary with aggregated topic information
+    """
+    import re
+
+    # Search for notes containing the topic
+    search_results = vault_reader.search_notes(query=topic, limit=50)
+
+    # Also search by tag if it looks like a tag
+    tag_results = []
+    if not topic.startswith('#'):
+        tag_results = vault_reader.list_notes(tags=[topic], limit=50)
+
+    # Combine results, deduplicate by path
+    seen_paths = set()
+    all_notes = []
+
+    for note in search_results + tag_results:
+        if note['path'] not in seen_paths:
+            seen_paths.add(note['path'])
+            all_notes.append(note)
+
+    # Gather content and snippets from each note
+    notes_with_content = []
+    for note_meta in all_notes:
+        try:
+            note_data = vault_reader.read_note(path=note_meta['path'])
+            if not note_data:
+                continue
+
+            content = note_data.get('content', '')
+
+            # Extract snippets containing the topic
+            snippets = []
+            lines = content.split('\n')
+            topic_lower = topic.lower()
+
+            for i, line in enumerate(lines):
+                if topic_lower in line.lower():
+                    # Get surrounding context (2 lines before/after)
+                    start = max(0, i - 2)
+                    end = min(len(lines), i + 3)
+                    snippet = '\n'.join(lines[start:end])
+                    snippets.append({
+                        'line': i + 1,
+                        'text': snippet.strip()
+                    })
+
+            # Get wikilinks from note
+            links = []
+            link_pattern = r"\[\[([^\]|]+)(?:\|[^\]]+)?\]\]"
+            for match in re.findall(link_pattern, content):
+                link_name = match.split('/')[-1] if '/' in match else match
+                links.append(link_name)
+
+            notes_with_content.append({
+                'title': note_data['title'],
+                'path': note_data['path'],
+                'para_location': note_data.get('para_location'),
+                'tags': note_data.get('tags', []),
+                'snippets': snippets[:5],  # Limit snippets per note
+                'links': links[:10],  # Limit links shown
+                'excerpt': content[:500] + ('...' if len(content) > 500 else '')
+            })
+
+        except Exception:
+            continue
+
+    # Gather backlinks if requested
+    backlink_notes = []
+    if include_backlinks:
+        for note in notes_with_content[:10]:  # Limit backlink search
+            try:
+                backlinks = vault_reader.get_backlinks(note['title'])
+                for bl in backlinks:
+                    if bl['path'] not in seen_paths:
+                        seen_paths.add(bl['path'])
+                        backlink_notes.append({
+                            'title': bl['title'],
+                            'path': bl['path'],
+                            'para_location': bl.get('para_location'),
+                            'links_to': note['title']
+                        })
+            except Exception:
+                continue
+
+    # Aggregate tags across all notes
+    all_tags = {}
+    for note in notes_with_content:
+        for tag in note.get('tags', []):
+            all_tags[tag] = all_tags.get(tag, 0) + 1
+
+    # Group by PARA location
+    by_para = {
+        'projects': [],
+        'areas': [],
+        'resources': [],
+        'archive': [],
+        'other': []
+    }
+    for note in notes_with_content:
+        para = note.get('para_location') or 'other'
+        if para in by_para:
+            by_para[para].append(note['title'])
+        else:
+            by_para['other'].append(note['title'])
+
+    return {
+        'topic': topic,
+        'total_notes': len(notes_with_content),
+        'total_backlinks': len(backlink_notes),
+        'common_tags': sorted(all_tags.items(), key=lambda x: -x[1])[:10],
+        'by_para_location': {k: v for k, v in by_para.items() if v},
+        'notes': notes_with_content,
+        'backlink_notes': backlink_notes[:20]
+    }
+
+
 def get_project_activity(vault_reader, folder_path: str) -> List[Dict]:
     """
     Get activity summary for each project note in a folder.

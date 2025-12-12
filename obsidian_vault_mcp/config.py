@@ -40,6 +40,17 @@ class VaultConfig(BaseModel):
         description="Logging level (DEBUG, INFO, WARNING, ERROR)"
     )
 
+    # Daily notes configuration
+    daily_notes_folder: str = Field(
+        default="0 - INBOX",
+        description="Folder for daily notes (relative to vault root)"
+    )
+
+    daily_notes_format: str = Field(
+        default="%Y-%m-%d",
+        description="Date format for daily note filenames (strftime format)"
+    )
+
     class Config:
         extra = "allow"
 

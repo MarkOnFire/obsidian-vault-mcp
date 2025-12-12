@@ -34,7 +34,16 @@ class Note:
         # Extract common metadata fields
         self.tags = self._extract_tags()
         self.created = self._extract_created()
+        self.modified = self._get_modified_time()
         self.para_location = self.metadata.get("para")
+
+    def _get_modified_time(self) -> Optional[datetime]:
+        """Get modification time from file system."""
+        try:
+            mtime = self.path.stat().st_mtime
+            return datetime.fromtimestamp(mtime)
+        except (OSError, ValueError):
+            return None
 
     def _extract_tags(self) -> List[str]:
         """Extract tags from frontmatter."""
@@ -176,6 +185,9 @@ class Note:
 
         if self.created:
             data["created"] = self.created.isoformat()
+
+        if self.modified:
+            data["modified"] = self.modified.isoformat()
 
         if include_content:
             data["content"] = self.content

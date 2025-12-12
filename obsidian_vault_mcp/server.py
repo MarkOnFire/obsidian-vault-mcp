@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field
 
 from .config import VaultConfig, load_config
 from .vault import VaultReader
-from .tasks import get_folder_task_stats, get_project_activity
+from .tasks import get_folder_task_stats, get_project_activity, get_weekly_summary, gather_topic
 
 
 # Configure logging
@@ -54,6 +54,10 @@ class SearchNotesParams(BaseModel):
         20,
         description="Maximum number of results"
     )
+    include_snippets: bool = Field(
+        False,
+        description="Include matching text snippets with surrounding context"
+    )
 
 
 class ListNotesParams(BaseModel):
@@ -78,6 +82,14 @@ class ListNotesParams(BaseModel):
     created_before: Optional[str] = Field(
         None,
         description="ISO date string"
+    )
+    modified_after: Optional[str] = Field(
+        None,
+        description="Filter notes modified after this ISO date (e.g., '2024-01-01')"
+    )
+    modified_before: Optional[str] = Field(
+        None,
+        description="Filter notes modified before this ISO date"
     )
     limit: int = Field(
         50,
@@ -121,6 +133,72 @@ class GetProjectActivityParams(BaseModel):
     )
 
 
+class GetWeeklySummaryParams(BaseModel):
+    """Parameters for obsidian_get_weekly_summary tool."""
+
+    start_date: Optional[str] = Field(
+        None,
+        description="Start date in ISO format (YYYY-MM-DD). Default: 7 days ago"
+    )
+    end_date: Optional[str] = Field(
+        None,
+        description="End date in ISO format (YYYY-MM-DD). Default: today"
+    )
+    para_location: Optional[str] = Field(
+        None,
+        description="Filter by PARA location (projects, areas, resources, archive)"
+    )
+
+
+class GatherTopicParams(BaseModel):
+    """Parameters for obsidian_gather_topic tool."""
+
+    topic: str = Field(
+        description="Topic to gather information about (search term, tag, or note title)"
+    )
+    include_backlinks: bool = Field(
+        True,
+        description="Whether to include notes that link to matching notes"
+    )
+
+
+class CreateDailyNoteParams(BaseModel):
+    """Parameters for obsidian_create_daily_note tool."""
+
+    content: str = Field(
+        default="",
+        description="Note content (markdown)"
+    )
+    date: Optional[str] = Field(
+        None,
+        description="Date for the note in YYYY-MM-DD format. Defaults to today."
+    )
+    tags: Optional[List[str]] = Field(
+        None,
+        description="Tags to add to the note (without # prefix)"
+    )
+    append_if_exists: bool = Field(
+        False,
+        description="If True, append content to existing daily note instead of failing"
+    )
+
+
+class CreateInboxNoteParams(BaseModel):
+    """Parameters for obsidian_create_inbox_note tool."""
+
+    title: str = Field(
+        description="Note title (will be used as filename)"
+    )
+    content: str = Field(
+        default="",
+        description="Note content (markdown)"
+    )
+    tags: Optional[List[str]] = Field(
+        None,
+        description="Tags to add to the note (without # prefix)"
+    )
+
+
 def create_server(config: VaultConfig) -> Server:
     """
     Create and configure MCP server.
@@ -151,7 +229,8 @@ def create_server(config: VaultConfig) -> Server:
                 description=(
                     "Search note contents with full-text search. "
                     "Can filter by PARA location, folder, and limit results. "
-                    "Returns matching notes with metadata but not full content."
+                    "Set include_snippets=true to get matching text with context. "
+                    "Returns matching notes with metadata and optional snippets."
                 ),
                 inputSchema=SearchNotesParams.model_json_schema(),
             ),
@@ -159,7 +238,8 @@ def create_server(config: VaultConfig) -> Server:
                 name="obsidian_list_notes",
                 description=(
                     "List notes matching specific criteria. "
-                    "Filter by PARA location, folder, tags, creation dates. "
+                    "Filter by PARA location, folder, tags, creation dates, or modification dates. "
+                    "Use modified_after to find recently updated notes. "
                     "Returns note metadata without full content."
                 ),
                 inputSchema=ListNotesParams.model_json_schema(),
@@ -199,6 +279,46 @@ def create_server(config: VaultConfig) -> Server:
                     "Ideal for project portfolio reviews and identifying inactive work."
                 ),
                 inputSchema=GetProjectActivityParams.model_json_schema(),
+            ),
+            Tool(
+                name="obsidian_get_weekly_summary",
+                description=(
+                    "Get a summary of vault activity for a time period. "
+                    "Returns tasks completed, notes with activity, completions by day/project. "
+                    "Can filter by PARA location. Default period is last 7 days. "
+                    "Perfect for answering 'what did I do last week?' or 'what's my progress?'"
+                ),
+                inputSchema=GetWeeklySummaryParams.model_json_schema(),
+            ),
+            Tool(
+                name="obsidian_gather_topic",
+                description=(
+                    "Gather all information on a topic from the vault. "
+                    "Searches by content and tags, returns matching notes with excerpts and snippets. "
+                    "Includes backlinks and groups results by PARA location. "
+                    "Ideal for 'get me everything on X' queries."
+                ),
+                inputSchema=GatherTopicParams.model_json_schema(),
+            ),
+            Tool(
+                name="obsidian_create_daily_note",
+                description=(
+                    "Create or append to a daily note. "
+                    "Daily notes are stored in the configured daily notes folder (default: 0 - INBOX/Daily). "
+                    "If the note exists, use append_if_exists=True to add content with a timestamp. "
+                    "Automatically adds PARA location 'inbox' and created date to frontmatter."
+                ),
+                inputSchema=CreateDailyNoteParams.model_json_schema(),
+            ),
+            Tool(
+                name="obsidian_create_inbox_note",
+                description=(
+                    "Create a new note in the INBOX folder. "
+                    "Use this to capture ideas, tasks, or content that needs to be processed later. "
+                    "The title becomes the filename. "
+                    "Automatically adds PARA location 'inbox' and created date to frontmatter."
+                ),
+                inputSchema=CreateInboxNoteParams.model_json_schema(),
             ),
         ]
 
@@ -293,6 +413,7 @@ def create_server(config: VaultConfig) -> Server:
                     para_location=params.para_location,
                     folder=params.folder,
                     limit=params.limit,
+                    include_snippets=params.include_snippets,
                 )
 
                 if not results:
@@ -307,15 +428,29 @@ def create_server(config: VaultConfig) -> Server:
                 response = f"Found {len(results)} note(s) matching '{params.query}':\n\n"
 
                 for note in results:
-                    response += f"- **{note['title']}**"
+                    response += f"### {note['title']}"
 
                     if note.get('para_location'):
                         response += f" ({note['para_location']})"
 
-                    if note.get('tags'):
-                        response += f" | Tags: {', '.join(note['tags'])}"
+                    response += "\n"
 
-                    response += f"\n  Path: {note['path']}\n"
+                    if note.get('tags'):
+                        response += f"**Tags**: {', '.join(note['tags'])}\n"
+
+                    response += f"**Path**: {note['path']}\n"
+
+                    # Include snippets if available
+                    if note.get('snippets'):
+                        response += "\n**Matching snippets**:\n"
+                        for snippet in note['snippets']:
+                            response += f"\n> Line {snippet['line']}:\n"
+                            snippet_text = snippet['text'][:300]
+                            if len(snippet['text']) > 300:
+                                snippet_text += "..."
+                            response += f"> {snippet_text}\n"
+
+                    response += "\n---\n\n"
 
                 return [TextContent(type="text", text=response)]
 
@@ -327,6 +462,8 @@ def create_server(config: VaultConfig) -> Server:
                     tags=params.tags,
                     created_after=params.created_after,
                     created_before=params.created_before,
+                    modified_after=params.modified_after,
+                    modified_before=params.modified_before,
                     limit=params.limit,
                 )
 
@@ -541,6 +678,207 @@ def create_server(config: VaultConfig) -> Server:
                 response += f"```json\n{json.dumps(projects, indent=2)}\n```"
 
                 return [TextContent(type="text", text=response)]
+
+            elif name == "obsidian_get_weekly_summary":
+                params = GetWeeklySummaryParams(**arguments)
+                import json
+
+                result = get_weekly_summary(
+                    vault_reader=vault,
+                    start_date=params.start_date,
+                    end_date=params.end_date,
+                    para_location=params.para_location
+                )
+
+                # Format response
+                response = f"# Weekly Summary\n\n"
+                response += f"**Period**: {result['period']['start']} to {result['period']['end']}\n"
+                if result['para_location']:
+                    response += f"**PARA Location**: {result['para_location']}\n"
+                response += "\n"
+
+                summary = result['summary']
+                response += "## Summary\n\n"
+                response += f"- **Tasks Completed**: {summary['tasks_completed']}\n"
+                response += f"- **Notes with Activity**: {summary['notes_with_activity']}\n"
+                response += f"- **Active Tasks**: {summary['active_tasks']}\n"
+                response += f"- **Blocked Tasks**: {summary['blocked_tasks']}\n"
+                response += f"- **Overdue Tasks**: {summary['overdue_tasks']}\n\n"
+
+                # Completions by day
+                if result['completions_by_day']:
+                    response += "## Completions by Day\n\n"
+                    for day, count in sorted(result['completions_by_day'].items()):
+                        response += f"- {day}: {count} task(s)\n"
+                    response += "\n"
+
+                # Completions by project
+                if result['completions_by_project']:
+                    response += "## Completions by Project\n\n"
+                    for project, tasks in result['completions_by_project'].items():
+                        response += f"### {project} ({len(tasks)} completed)\n\n"
+                        for task in tasks[:5]:
+                            response += f"- {task['content'][:80]}{'...' if len(task['content']) > 80 else ''}\n"
+                        if len(tasks) > 5:
+                            response += f"- *...and {len(tasks) - 5} more*\n"
+                        response += "\n"
+
+                # Overdue tasks
+                if result['overdue_tasks']:
+                    response += "## Overdue Tasks\n\n"
+                    for task in result['overdue_tasks'][:10]:
+                        response += f"- {task['content'][:60]} (due {task['due_date']})\n"
+                    response += "\n"
+
+                # Add raw JSON
+                response += "---\n\n"
+                response += "**Raw JSON Data** (for programmatic access):\n\n"
+                response += f"```json\n{json.dumps(result, indent=2)}\n```"
+
+                return [TextContent(type="text", text=response)]
+
+            elif name == "obsidian_gather_topic":
+                params = GatherTopicParams(**arguments)
+                import json
+
+                result = gather_topic(
+                    vault_reader=vault,
+                    topic=params.topic,
+                    include_backlinks=params.include_backlinks
+                )
+
+                # Format response
+                response = f"# Topic: {result['topic']}\n\n"
+                response += f"**Total Notes Found**: {result['total_notes']}\n"
+                response += f"**Backlink Notes**: {result['total_backlinks']}\n\n"
+
+                # Common tags
+                if result['common_tags']:
+                    response += "## Common Tags\n\n"
+                    for tag, count in result['common_tags']:
+                        response += f"- #{tag} ({count} notes)\n"
+                    response += "\n"
+
+                # By PARA location
+                if result['by_para_location']:
+                    response += "## By PARA Location\n\n"
+                    for para, titles in result['by_para_location'].items():
+                        response += f"### {para.capitalize()} ({len(titles)})\n"
+                        for title in titles[:5]:
+                            response += f"- {title}\n"
+                        if len(titles) > 5:
+                            response += f"- *...and {len(titles) - 5} more*\n"
+                        response += "\n"
+
+                # Notes with snippets
+                response += "## Relevant Notes\n\n"
+                for note in result['notes'][:15]:
+                    response += f"### {note['title']}\n\n"
+                    response += f"**Path**: {note['path']}\n"
+                    if note.get('para_location'):
+                        response += f"**PARA**: {note['para_location']}\n"
+                    if note.get('tags'):
+                        response += f"**Tags**: {', '.join(note['tags'])}\n"
+
+                    # Show snippets
+                    if note.get('snippets'):
+                        response += "\n**Matching snippets**:\n"
+                        for snippet in note['snippets'][:3]:
+                            response += f"\n> Line {snippet['line']}:\n"
+                            response += f"> {snippet['text'][:200]}{'...' if len(snippet['text']) > 200 else ''}\n"
+                    else:
+                        # Show excerpt if no snippets
+                        response += f"\n**Excerpt**: {note['excerpt'][:300]}...\n"
+
+                    response += "\n---\n\n"
+
+                # Backlinks section
+                if result['backlink_notes']:
+                    response += "## Notes Linking to These Topics\n\n"
+                    for bl in result['backlink_notes'][:10]:
+                        response += f"- **{bl['title']}** links to *{bl['links_to']}*\n"
+                        response += f"  Path: {bl['path']}\n"
+                    response += "\n"
+
+                return [TextContent(type="text", text=response)]
+
+            elif name == "obsidian_create_daily_note":
+                params = CreateDailyNoteParams(**arguments)
+                from datetime import datetime as dt
+
+                # Parse date if provided
+                date = None
+                if params.date:
+                    try:
+                        date = dt.strptime(params.date, "%Y-%m-%d")
+                    except ValueError:
+                        return [
+                            TextContent(
+                                type="text",
+                                text=f"Invalid date format: {params.date}. Use YYYY-MM-DD."
+                            )
+                        ]
+
+                try:
+                    result = vault.create_daily_note(
+                        content=params.content,
+                        date=date,
+                        tags=params.tags,
+                        append_if_exists=params.append_if_exists,
+                    )
+
+                    # Format response
+                    action = "Appended to" if result['action'] == 'appended' else "Created"
+                    response = f"# {action} Daily Note\n\n"
+                    response += f"**Title**: {result['title']}\n"
+                    response += f"**Path**: {result['path']}\n"
+                    response += f"**PARA**: {result['para_location']}\n"
+
+                    if result.get('date'):
+                        response += f"**Date**: {result['date']}\n"
+
+                    return [TextContent(type="text", text=response)]
+
+                except FileExistsError as e:
+                    return [
+                        TextContent(
+                            type="text",
+                            text=f"Daily note already exists. Set append_if_exists=True to append.\n\nDetails: {str(e)}"
+                        )
+                    ]
+
+            elif name == "obsidian_create_inbox_note":
+                params = CreateInboxNoteParams(**arguments)
+
+                try:
+                    result = vault.create_inbox_note(
+                        title=params.title,
+                        content=params.content,
+                        tags=params.tags,
+                    )
+
+                    # Format response
+                    response = f"# Created Inbox Note\n\n"
+                    response += f"**Title**: {result['title']}\n"
+                    response += f"**Path**: {result['path']}\n"
+                    response += f"**PARA**: {result['para_location']}\n"
+
+                    return [TextContent(type="text", text=response)]
+
+                except FileExistsError as e:
+                    return [
+                        TextContent(
+                            type="text",
+                            text=f"Note already exists: {str(e)}"
+                        )
+                    ]
+                except ValueError as e:
+                    return [
+                        TextContent(
+                            type="text",
+                            text=f"Invalid title: {str(e)}"
+                        )
+                    ]
 
             else:
                 return [
