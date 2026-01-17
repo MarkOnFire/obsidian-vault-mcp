@@ -61,6 +61,22 @@ obsidian_update_daily_note(
 
 #### Attachment Workflow
 
+**Platform-Specific Notes:**
+
+| Platform | File Access | Recommended Workflow |
+|----------|-------------|---------------------|
+| Claude Code (CLI) | Full local filesystem | Use `source_path` directly |
+| Claude Desktop | Files uploaded to Anthropic servers | Save file locally first, then use `source_path` |
+| Claude Mobile | No MCP support | N/A |
+
+**Why Claude Desktop requires extra steps:** Files uploaded to Claude Desktop exist on Anthropic's servers at paths like `/mnt/user-data/uploads/...`, which the local MCP server cannot access. The MCP server only has access to your local filesystem.
+
+**Claude Desktop Workflow:**
+1. Save the file you want to attach to a local folder (e.g., `~/Downloads/`)
+2. Tell Claude the local path: "Attach `~/Downloads/report.pdf` to my Project Notes"
+3. Claude calls `obsidian_add_attachment(source_path="~/Downloads/report.pdf", link_to_note="Project Notes")`
+
+**Claude Code Workflow (recommended):**
 ```python
 # Copy a file and link it to a note
 obsidian_add_attachment(
@@ -75,13 +91,15 @@ obsidian_add_attachment(
     embed=True  # renders as ![[screenshot.png]]
 )
 
-# Save base64 content (e.g., from API)
+# Save base64 content (e.g., from API responses)
 obsidian_add_attachment(
     base64_content="<base64 string>",
     filename="chart.png",
     link_to_note="Dashboard"
 )
 ```
+
+**Default Attachment Destination:** Files are saved to `4 - ARCHIVE` in your vault (configurable via `attachment_folder` in config).
 
 ### Development Tips
 
