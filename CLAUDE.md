@@ -27,6 +27,37 @@ The server supports these write operations:
 | `obsidian_create_daily_note` | Create/append to daily notes in INBOX |
 | `obsidian_create_inbox_note` | Create new notes in INBOX for processing |
 | `obsidian_add_attachment` | Add PDFs/images to Archive with auto-linking |
+| `obsidian_update_daily_note` | Update sections with modification preservation |
+
+### Daily Journal Tools
+
+| Tool | Purpose |
+|------|---------|
+| `obsidian_get_unarchived_daily_notes` | Find notes not yet archived to month folders |
+| `obsidian_extract_note_tasks` | Parse tasks with section context and completion dates |
+| `obsidian_update_daily_note` | Smart section updates preserving user edits |
+
+#### Daily Journal Workflow
+
+```python
+# Find unarchived daily notes
+unarchived = obsidian_get_unarchived_daily_notes()
+
+# Extract tasks from a note
+tasks = obsidian_extract_note_tasks(
+    note_path="0 - INBOX/DAILY JOURNAL/2026-01-15.md",
+    sections=["Action Items", "Quick Captures"]
+)
+
+# Update sections (preserves user modifications)
+obsidian_update_daily_note(
+    date="2026-01-15",
+    sections={
+        "Calendar": "## Today's Events\n- Meeting at 10am",
+        "Tasks": "## Action Items\n- [ ] Review PR"
+    }
+)
+```
 
 #### Attachment Workflow
 
@@ -63,6 +94,8 @@ obsidian_add_attachment(
 
 ```json
 {
+  "daily_journal_folder": "0 - INBOX/DAILY JOURNAL",
+  "daily_journal_archive_pattern": "JANUARY|FEBRUARY|...|DECEMBER",
   "attachment_folder": "4 - ARCHIVE",
   "supported_attachment_types": ["pdf", "png", "jpg", "jpeg", "gif", "webp", "svg", "mp3", "mp4", "wav", "mov"],
   "max_attachment_size_mb": 100

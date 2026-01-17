@@ -1,13 +1,14 @@
 """Vault operations for reading and searching Obsidian notes."""
 
 import base64
+import hashlib
 import logging
 import re
 import tempfile
 import shutil
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Tuple
 
 import frontmatter
 
@@ -898,3 +899,484 @@ class VaultReader:
             "note_path": str(file_path),
             "link_added": link,
         }
+
+    # =========================================================================
+    # Daily Journal Operations
+    # =========================================================================
+
+    def get_unarchived_daily_notes(
+        self,
+        exclude_date: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """
+        Get daily notes that haven't been archived (moved to month subfolders).
+
+        Notes in the daily journal folder root are considered unarchived.
+        Notes in subfolders matching the archive pattern (JANUARY, FEBRUARY, etc.)
+        are considered archived.
+
+        Args:
+            exclude_date: Optional date string (YYYY-MM-DD) to exclude (typically today)
+
+        Returns:
+            List of dicts with note info, sorted by date (oldest first)
+        """
+        journal_folder = self.config.vault_path / self.config.daily_journal_folder
+
+        if not journal_folder.exists():
+            logger.warning(f"Daily journal folder not found: {journal_folder}")
+            return []
+
+        # Get date pattern from config
+        date_format = self.config.daily_notes_format
+        # Convert strftime to regex pattern
+        date_regex = date_format.replace("%Y", r"\d{4}").replace("%m", r"\d{2}").replace("%d", r"\d{2}")
+        date_pattern = re.compile(rf"^{date_regex}\.md$")
+
+        # Use glob (not rglob) to only get files directly in the folder
+        unarchived = []
+
+        for note_path in journal_folder.glob("*.md"):
+            # Check if filename matches date pattern
+            if not date_pattern.match(note_path.name):
+                continue
+
+            # Extract date from filename
+            date_str = note_path.stem
+
+            # Exclude specified date (typically today)
+            if exclude_date and date_str == exclude_date:
+                continue
+
+            # Parse the note for metadata
+            try:
+                with open(note_path, "r", encoding="utf-8") as f:
+                    content = f.read()
+
+                parsed = frontmatter.loads(content)
+
+                unarchived.append({
+                    "path": str(note_path),
+                    "date": date_str,
+                    "filename": note_path.name,
+                    "frontmatter": dict(parsed.metadata),
+                    "content_length": len(parsed.content),
+                    "has_section_markers": "<!-- SECTION:" in content,
+                })
+            except Exception as e:
+                logger.warning(f"Could not parse {note_path}: {e}")
+                unarchived.append({
+                    "path": str(note_path),
+                    "date": date_str,
+                    "filename": note_path.name,
+                    "frontmatter": {},
+                    "content_length": 0,
+                    "has_section_markers": False,
+                    "error": str(e),
+                })
+
+        # Sort by date (oldest first)
+        unarchived.sort(key=lambda x: x["date"])
+
+        logger.info(f"Found {len(unarchived)} unarchived daily note(s)")
+        return unarchived
+
+    def extract_note_tasks(
+        self,
+        note_path: str,
+        sections: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        """
+        Extract tasks from a note with status, section info, and metadata.
+
+        Args:
+            note_path: Path to the note (absolute or relative to vault)
+            sections: Optional list of section names to extract from (e.g., ["Action Items", "Reminders"])
+                     If None, extracts from entire note.
+
+        Returns:
+            Dict with:
+                - checked: list of completed tasks
+                - unchecked: list of incomplete tasks
+                - total: total count
+                - by_section: dict mapping section names to task lists
+        """
+        path = Path(note_path)
+        if not path.is_absolute():
+            path = self.config.vault_path / note_path
+
+        if not path.exists():
+            raise FileNotFoundError(f"Note not found: {path}")
+
+        with open(path, "r", encoding="utf-8") as f:
+            content = f.read()
+
+        # Parse frontmatter
+        parsed = frontmatter.loads(content)
+        body = parsed.content
+        note_date = path.stem  # Assume filename is the date
+
+        result = {
+            "note_path": str(path),
+            "note_date": note_date,
+            "checked": [],
+            "unchecked": [],
+            "total": 0,
+            "by_section": {},
+        }
+
+        def parse_task_line(line: str, section_name: str) -> Optional[Dict[str, Any]]:
+            """Parse a single task line and return task dict."""
+            # Match: - [x] or - [ ] followed by task text
+            checked_match = re.match(r'^-\s*\[x\]\s+(.+?)(?:\s*✅\s*(\d{4}-\d{2}-\d{2}))?$', line, re.IGNORECASE)
+            unchecked_match = re.match(r'^-\s*\[ \]\s+(.+)$', line)
+
+            if checked_match:
+                task_text = checked_match.group(1).strip()
+                completion_date = checked_match.group(2)
+
+                # Extract added date if present: (added Jan 12)
+                added_match = re.search(r'\(added\s+([^)]+)\)', task_text)
+                added_date = added_match.group(1) if added_match else None
+
+                # Clean task text
+                task_text = re.sub(r'\s*\(added[^)]*\)\s*', '', task_text)
+                task_text = re.sub(r'\s*✅.*$', '', task_text)
+                task_text = re.sub(r'\s*⚠️.*$', '', task_text).strip()
+
+                return {
+                    "text": task_text,
+                    "completed": True,
+                    "completion_date": completion_date,
+                    "added_date": added_date,
+                    "section": section_name,
+                    "source_date": note_date,
+                }
+            elif unchecked_match:
+                task_text = unchecked_match.group(1).strip()
+
+                # Extract added date if present
+                added_match = re.search(r'\(added\s+([^)]+)\)', task_text)
+                added_date = added_match.group(1) if added_match else None
+
+                # Extract warning/age info
+                age_match = re.search(r'⚠️\s*\*?(\d+)\s*days', task_text)
+                age_days = int(age_match.group(1)) if age_match else None
+
+                # Clean task text
+                task_text = re.sub(r'\s*\(added[^)]*\)\s*', '', task_text)
+                task_text = re.sub(r'\s*⚠️.*$', '', task_text).strip()
+
+                return {
+                    "text": task_text,
+                    "completed": False,
+                    "added_date": added_date,
+                    "age_days": age_days,
+                    "section": section_name,
+                    "source_date": note_date,
+                }
+
+            return None
+
+        if sections:
+            # Extract tasks only from specified sections
+            for section_name in sections:
+                # Match section headers (### or ####) that contain the section name
+                # The header may have additional text like "*(persistent)*"
+                # Note: {{3,4}} needed to escape braces in f-string for regex quantifier
+                section_pattern = rf'^#{{3,4}}\s+[^\n]*{re.escape(section_name)}[^\n]*\n(.*?)(?=^#{{2,4}}\s|\n---|\Z)'
+                matches = re.findall(section_pattern, body, re.DOTALL | re.IGNORECASE | re.MULTILINE)
+
+                section_tasks = {"checked": [], "unchecked": []}
+
+                for section_content in matches:
+                    for line in section_content.split('\n'):
+                        line = line.strip()
+                        if not line.startswith('-'):
+                            continue
+
+                        task = parse_task_line(line, section_name)
+                        if task:
+                            if task["completed"]:
+                                section_tasks["checked"].append(task)
+                                result["checked"].append(task)
+                            else:
+                                section_tasks["unchecked"].append(task)
+                                result["unchecked"].append(task)
+
+                result["by_section"][section_name] = section_tasks
+        else:
+            # Extract all tasks from the note
+            current_section = "Unknown"
+
+            for line in body.split('\n'):
+                line_stripped = line.strip()
+
+                # Track current section
+                section_match = re.match(r'^#{2,4}\s+(.+)$', line_stripped)
+                if section_match:
+                    current_section = section_match.group(1).strip()
+                    if current_section not in result["by_section"]:
+                        result["by_section"][current_section] = {"checked": [], "unchecked": []}
+                    continue
+
+                if not line_stripped.startswith('-'):
+                    continue
+
+                task = parse_task_line(line_stripped, current_section)
+                if task:
+                    if current_section not in result["by_section"]:
+                        result["by_section"][current_section] = {"checked": [], "unchecked": []}
+
+                    if task["completed"]:
+                        result["by_section"][current_section]["checked"].append(task)
+                        result["checked"].append(task)
+                    else:
+                        result["by_section"][current_section]["unchecked"].append(task)
+                        result["unchecked"].append(task)
+
+        result["total"] = len(result["checked"]) + len(result["unchecked"])
+
+        return result
+
+    def update_daily_note(
+        self,
+        date: str,
+        sections: Dict[str, str],
+        preserve_modified: bool = True,
+        create_if_missing: bool = False,
+        template: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Update specific sections of a daily note while preserving user modifications.
+
+        Uses hash-based modification detection: if a section's current content
+        matches its stored hash (from frontmatter), it's safe to regenerate.
+        Modified sections are preserved.
+
+        Args:
+            date: Date string (YYYY-MM-DD) for the daily note
+            sections: Dict mapping section names to new content
+            preserve_modified: If True, don't overwrite sections the user has modified
+            create_if_missing: If True, create the note if it doesn't exist
+            template: Optional template string for new notes (must include section markers)
+
+        Returns:
+            Dict with update results including which sections were updated/preserved
+        """
+        # Build path to daily note
+        journal_folder = self.config.vault_path / self.config.daily_journal_folder
+        note_path = journal_folder / f"{date}.md"
+
+        result = {
+            "path": str(note_path),
+            "date": date,
+            "created": False,
+            "updated_sections": [],
+            "preserved_sections": [],
+            "new_sections": [],
+            "errors": [],
+        }
+
+        # Check if note exists
+        if not note_path.exists():
+            if not create_if_missing:
+                raise FileNotFoundError(f"Daily note not found: {note_path}")
+
+            # Create new note from template
+            if not template:
+                raise ValueError("template is required when create_if_missing=True and note doesn't exist")
+
+            # Ensure directory exists
+            journal_folder.mkdir(parents=True, exist_ok=True)
+
+            # Compute hashes for all sections
+            section_hashes = {}
+            for section_name, content in sections.items():
+                section_hashes[section_name] = self._compute_section_hash(content)
+
+            # Format template with sections and hashes
+            formatted_content = template.format(
+                date=date,
+                generated_sections_frontmatter=self._format_section_hashes(section_hashes),
+                **{f"section_{k}": self._wrap_section(v, k) for k, v in sections.items()},
+                **sections,  # Also provide raw content for templates that don't use wrapped
+            )
+
+            note_path.write_text(formatted_content, encoding="utf-8")
+
+            result["created"] = True
+            result["updated_sections"] = list(sections.keys())
+
+            logger.info(f"Created daily note: {note_path}")
+            return result
+
+        # Note exists - read and update selectively
+        with open(note_path, "r", encoding="utf-8") as f:
+            existing_content = f.read()
+
+        # Parse frontmatter to get stored hashes
+        parsed = frontmatter.loads(existing_content)
+        stored_hashes = self._get_stored_hashes(dict(parsed.metadata))
+
+        # Track new hashes
+        new_hashes = dict(stored_hashes)
+
+        # Process each section
+        updated_content = existing_content
+
+        for section_name, new_content in sections.items():
+            # Compute hash of new content
+            new_hash = self._compute_section_hash(new_content)
+            new_hashes[section_name] = new_hash
+
+            # Check if section exists in note
+            section_start_marker = f"<!-- SECTION:{section_name}:START -->"
+            section_end_marker = f"<!-- SECTION:{section_name}:END -->"
+
+            if section_start_marker not in existing_content:
+                # Section doesn't exist - this is a new section
+                result["new_sections"].append(section_name)
+                logger.debug(f"Section '{section_name}' not found in note - skipping")
+                continue
+
+            # Extract current section content
+            current_content = self._extract_section_content(existing_content, section_name)
+
+            if current_content is None:
+                result["errors"].append(f"Could not extract section: {section_name}")
+                continue
+
+            # Check if section was modified
+            stored_hash = stored_hashes.get(section_name, "")
+
+            if preserve_modified and stored_hash:
+                current_hash = self._compute_section_hash(current_content)
+                if current_hash != stored_hash:
+                    # User modified this section - preserve it
+                    result["preserved_sections"].append(section_name)
+                    logger.info(f"Preserving modified section: {section_name}")
+                    continue
+
+            # Safe to update this section
+            wrapped_content = self._wrap_section(new_content, section_name)
+
+            # Replace the section in content
+            pattern = rf'{re.escape(section_start_marker)}.*?{re.escape(section_end_marker)}'
+            updated_content = re.sub(pattern, wrapped_content, updated_content, flags=re.DOTALL)
+
+            result["updated_sections"].append(section_name)
+
+        # Update frontmatter with new hashes
+        updated_content = self._update_frontmatter_hashes(updated_content, new_hashes)
+
+        # Write back atomically
+        temp_fd, temp_path = tempfile.mkstemp(
+            suffix=".md",
+            dir=note_path.parent,
+            text=True
+        )
+        try:
+            with open(temp_fd, "w", encoding="utf-8") as f:
+                f.write(updated_content)
+            shutil.move(temp_path, note_path)
+        except Exception as e:
+            try:
+                Path(temp_path).unlink()
+            except OSError:
+                pass
+            raise OSError(f"Failed to update daily note: {e}")
+
+        logger.info(
+            f"Updated daily note: {len(result['updated_sections'])} updated, "
+            f"{len(result['preserved_sections'])} preserved"
+        )
+
+        return result
+
+    # =========================================================================
+    # Section Hash Helpers
+    # =========================================================================
+
+    def _compute_section_hash(self, content: str) -> str:
+        """Compute a hash of section content for modification detection."""
+        # Normalize whitespace before hashing
+        normalized = ' '.join(content.split())
+        return hashlib.md5(normalized.encode('utf-8')).hexdigest()[:12]
+
+    def _extract_section_content(self, full_content: str, section_name: str) -> Optional[str]:
+        """Extract content between section markers."""
+        start_marker = f"<!-- SECTION:{section_name}:START -->"
+        end_marker = f"<!-- SECTION:{section_name}:END -->"
+
+        start_idx = full_content.find(start_marker)
+        end_idx = full_content.find(end_marker)
+
+        if start_idx == -1 or end_idx == -1:
+            return None
+
+        content_start = start_idx + len(start_marker)
+        return full_content[content_start:end_idx].strip()
+
+    def _wrap_section(self, content: str, section_name: str) -> str:
+        """Wrap content with section markers."""
+        return f"<!-- SECTION:{section_name}:START -->\n{content}\n<!-- SECTION:{section_name}:END -->"
+
+    def _get_stored_hashes(self, frontmatter: Dict[str, Any]) -> Dict[str, str]:
+        """Extract stored section hashes from frontmatter."""
+        hashes_str = frontmatter.get("generated_sections", "")
+        if not hashes_str:
+            return {}
+
+        hashes = {}
+        # Handle inline format: {section: hash, ...}
+        if '{' in str(hashes_str):
+            try:
+                content = str(hashes_str).strip('{}')
+                for pair in content.split(','):
+                    if ':' in pair:
+                        key, value = pair.split(':', 1)
+                        hashes[key.strip()] = value.strip()
+            except Exception:
+                pass
+
+        return hashes
+
+    def _format_section_hashes(self, hashes: Dict[str, str]) -> str:
+        """Format section hashes for frontmatter."""
+        if not hashes:
+            return ""
+        hash_str = ", ".join(f"{k}: {v}" for k, v in hashes.items())
+        return f"generated_sections: {{{hash_str}}}\n"
+
+    def _update_frontmatter_hashes(self, content: str, hashes: Dict[str, str]) -> str:
+        """Update the generated_sections field in note content."""
+        hash_str = ", ".join(f"{k}: {v}" for k, v in hashes.items())
+        hash_line = f"generated_sections: {{{hash_str}}}"
+
+        # Check if we're in frontmatter
+        if not content.startswith('---'):
+            return content
+
+        # Find frontmatter boundaries
+        parts = content.split('---', 2)
+        if len(parts) < 3:
+            return content
+
+        fm_content = parts[1]
+        body = parts[2]
+
+        # Check if generated_sections already exists
+        if "generated_sections:" in fm_content:
+            # Replace existing line
+            fm_content = re.sub(
+                r'generated_sections:.*$',
+                hash_line,
+                fm_content,
+                flags=re.MULTILINE
+            )
+        else:
+            # Add before closing
+            fm_content = fm_content.rstrip() + f"\n{hash_line}\n"
+
+        return f"---{fm_content}---{body}"

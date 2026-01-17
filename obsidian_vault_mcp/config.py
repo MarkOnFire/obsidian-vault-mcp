@@ -51,6 +51,23 @@ class VaultConfig(BaseModel):
         description="Date format for daily note filenames (strftime format)"
     )
 
+    # Daily journal configuration (for unarchived note detection)
+    daily_journal_folder: str = Field(
+        default="0 - INBOX/DAILY JOURNAL",
+        description="Folder containing daily journal notes (relative to vault root)"
+    )
+
+    daily_journal_archive_pattern: str = Field(
+        default="JANUARY|FEBRUARY|MARCH|APRIL|MAY|JUNE|JULY|AUGUST|SEPTEMBER|OCTOBER|NOVEMBER|DECEMBER",
+        description="Regex pattern for archive subfolder names (notes in these are considered archived)"
+    )
+
+    # Section markers for daily notes
+    daily_note_section_marker_format: str = Field(
+        default="<!-- SECTION:{name}:START -->",
+        description="Format string for section start markers ({name} is replaced with section name)"
+    )
+
     # Attachment configuration
     attachment_folder: str = Field(
         default="4 - ARCHIVE",

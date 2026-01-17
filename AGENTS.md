@@ -87,6 +87,21 @@ Add an attachment (PDF, image, etc.) to the Archive folder. Supports:
 - Auto-appending wikilink to a specified note
 - Embed syntax for images (`![[]]`)
 
+### `obsidian_get_unarchived_daily_notes`
+Find daily journal notes that haven't been archived into month subfolders (e.g., JANUARY, FEBRUARY). Useful for processing recent notes that need review or archival.
+
+### `obsidian_extract_note_tasks`
+Extract tasks from a daily note with section-aware parsing. Returns checked/unchecked tasks with:
+- Completion dates (from `✅ YYYY-MM-DD` suffix)
+- Section context (which header the task appears under)
+- Age tracking for old incomplete tasks
+
+### `obsidian_update_daily_note`
+Update specific sections of a daily note while preserving user modifications. Uses:
+- Section markers (`<!-- SECTION:name:START/END -->`)
+- Content hashing to detect user edits
+- Only updates sections that haven't been manually modified
+
 ## Coding Conventions
 
 - Python 3.9+ with type hints
@@ -142,6 +157,8 @@ Create `config.json` for advanced configuration:
   "exclude_folders": [".obsidian", ".trash"],
   "daily_notes_folder": "0 - INBOX",
   "daily_notes_format": "%Y-%m-%d",
+  "daily_journal_folder": "0 - INBOX/DAILY JOURNAL",
+  "daily_journal_archive_pattern": "JANUARY|FEBRUARY|...|DECEMBER",
   "attachment_folder": "4 - ARCHIVE",
   "supported_attachment_types": ["pdf", "png", "jpg", "jpeg", "gif", "webp", "svg", "mp3", "mp4", "wav", "mov"],
   "max_attachment_size_mb": 100

@@ -252,6 +252,58 @@ class AddAttachmentParams(BaseModel):
     )
 
 
+class GetUnarchivedDailyNotesParams(BaseModel):
+    """Parameters for obsidian_get_unarchived_daily_notes tool."""
+
+    exclude_today: bool = Field(
+        True,
+        description="Exclude today's note from results (default: True)"
+    )
+
+
+class ExtractNoteTasksParams(BaseModel):
+    """Parameters for obsidian_extract_note_tasks tool."""
+
+    note_path: str = Field(
+        description="Path to the note (absolute or relative to vault)"
+    )
+    sections: Optional[List[str]] = Field(
+        None,
+        description="Specific section names to extract from (e.g., ['Action Items', 'Reminders']). If None, extracts all tasks."
+    )
+
+    @field_validator('sections', mode='before')
+    @classmethod
+    def coerce_sections(cls, v):
+        """Accept comma-separated string or array for sections."""
+        if isinstance(v, str):
+            return [s.strip() for s in v.split(',') if s.strip()]
+        return v
+
+
+class UpdateDailyNoteParams(BaseModel):
+    """Parameters for obsidian_update_daily_note tool."""
+
+    date: str = Field(
+        description="Date for the daily note (YYYY-MM-DD format)"
+    )
+    sections: dict = Field(
+        description="Dict mapping section names to new content (e.g., {'reading-list': '...', 'agenda': '...'})"
+    )
+    preserve_modified: bool = Field(
+        True,
+        description="If True, don't overwrite sections the user has modified (default: True)"
+    )
+    create_if_missing: bool = Field(
+        False,
+        description="If True, create the note if it doesn't exist (requires template)"
+    )
+    template: Optional[str] = Field(
+        None,
+        description="Template string for new notes (required if create_if_missing=True and note doesn't exist)"
+    )
+
+
 def create_server(config: VaultConfig) -> Server:
     """
     Create and configure MCP server.
@@ -383,6 +435,37 @@ def create_server(config: VaultConfig) -> Server:
                     "Returns the wikilink format and file info."
                 ),
                 inputSchema=AddAttachmentParams.model_json_schema(),
+            ),
+            Tool(
+                name="obsidian_get_unarchived_daily_notes",
+                description=(
+                    "Get daily notes that haven't been archived (moved to month subfolders). "
+                    "Notes in the daily journal folder root are considered unarchived. "
+                    "Returns list of notes with date, path, frontmatter, and section marker status. "
+                    "Useful for processing yesterday's notes before generating today's briefing."
+                ),
+                inputSchema=GetUnarchivedDailyNotesParams.model_json_schema(),
+            ),
+            Tool(
+                name="obsidian_extract_note_tasks",
+                description=(
+                    "Extract tasks from a note with completion status, section info, and metadata. "
+                    "Returns checked/unchecked tasks organized by section. "
+                    "Optionally filter to specific sections (e.g., 'Action Items', 'Reminders'). "
+                    "Useful for carrying forward unchecked tasks or syncing completions."
+                ),
+                inputSchema=ExtractNoteTasksParams.model_json_schema(),
+            ),
+            Tool(
+                name="obsidian_update_daily_note",
+                description=(
+                    "Update specific sections of a daily note while preserving user modifications. "
+                    "Uses hash-based modification detection: pristine sections are updated, "
+                    "user-modified sections are preserved. Sections must have markers like "
+                    "<!-- SECTION:name:START --> and <!-- SECTION:name:END -->. "
+                    "Can optionally create the note from a template if it doesn't exist."
+                ),
+                inputSchema=UpdateDailyNoteParams.model_json_schema(),
             ),
         ]
 
@@ -1000,6 +1083,123 @@ def create_server(config: VaultConfig) -> Server:
                             text=f"Invalid parameters: {str(e)}"
                         )
                     ]
+
+            elif name == "obsidian_get_unarchived_daily_notes":
+                params = GetUnarchivedDailyNotesParams(**arguments)
+
+                # Get today's date if we need to exclude it
+                from datetime import datetime
+                today = datetime.now().strftime("%Y-%m-%d") if params.exclude_today else None
+
+                notes = vault.get_unarchived_daily_notes(exclude_date=today)
+
+                if not notes:
+                    return [TextContent(type="text", text="No unarchived daily notes found.")]
+
+                # Format response
+                response = f"# Unarchived Daily Notes\n\n"
+                response += f"Found **{len(notes)}** unarchived note(s):\n\n"
+
+                for note in notes:
+                    response += f"## {note['date']}\n"
+                    response += f"- **Path**: {note['path']}\n"
+                    response += f"- **Content length**: {note['content_length']} chars\n"
+                    response += f"- **Has section markers**: {note['has_section_markers']}\n"
+                    if note.get('error'):
+                        response += f"- **Error**: {note['error']}\n"
+                    response += "\n"
+
+                return [TextContent(type="text", text=response)]
+
+            elif name == "obsidian_extract_note_tasks":
+                params = ExtractNoteTasksParams(**arguments)
+
+                try:
+                    result = vault.extract_note_tasks(
+                        note_path=params.note_path,
+                        sections=params.sections,
+                    )
+
+                    # Format response
+                    response = f"# Tasks from {result['note_date']}\n\n"
+                    response += f"**Total**: {result['total']} tasks "
+                    response += f"({len(result['checked'])} completed, {len(result['unchecked'])} pending)\n\n"
+
+                    if result['unchecked']:
+                        response += "## Unchecked Tasks\n\n"
+                        for task in result['unchecked']:
+                            section = task.get('section', 'Unknown')
+                            added = f" *(added {task['added_date']})*" if task.get('added_date') else ""
+                            age = f" ⚠️ {task['age_days']} days" if task.get('age_days') else ""
+                            response += f"- [ ] {task['text']}{added}{age}\n"
+                            response += f"  *Section: {section}*\n"
+                        response += "\n"
+
+                    if result['checked']:
+                        response += "## Checked Tasks\n\n"
+                        for task in result['checked']:
+                            section = task.get('section', 'Unknown')
+                            completed = f" ✅ {task['completion_date']}" if task.get('completion_date') else ""
+                            response += f"- [x] {task['text']}{completed}\n"
+                            response += f"  *Section: {section}*\n"
+                        response += "\n"
+
+                    return [TextContent(type="text", text=response)]
+
+                except FileNotFoundError as e:
+                    return [TextContent(type="text", text=f"Note not found: {str(e)}")]
+
+            elif name == "obsidian_update_daily_note":
+                params = UpdateDailyNoteParams(**arguments)
+
+                try:
+                    result = vault.update_daily_note(
+                        date=params.date,
+                        sections=params.sections,
+                        preserve_modified=params.preserve_modified,
+                        create_if_missing=params.create_if_missing,
+                        template=params.template,
+                    )
+
+                    # Format response
+                    response = f"# Daily Note Update: {result['date']}\n\n"
+                    response += f"**Path**: {result['path']}\n"
+
+                    if result['created']:
+                        response += f"**Status**: Created new note\n\n"
+                    else:
+                        response += f"**Status**: Updated existing note\n\n"
+
+                    if result['updated_sections']:
+                        response += "## Updated Sections\n"
+                        for section in result['updated_sections']:
+                            response += f"- {section}\n"
+                        response += "\n"
+
+                    if result['preserved_sections']:
+                        response += "## Preserved Sections (user modified)\n"
+                        for section in result['preserved_sections']:
+                            response += f"- {section}\n"
+                        response += "\n"
+
+                    if result['new_sections']:
+                        response += "## New Sections (not in note)\n"
+                        for section in result['new_sections']:
+                            response += f"- {section}\n"
+                        response += "\n"
+
+                    if result['errors']:
+                        response += "## Errors\n"
+                        for error in result['errors']:
+                            response += f"- {error}\n"
+                        response += "\n"
+
+                    return [TextContent(type="text", text=response)]
+
+                except FileNotFoundError as e:
+                    return [TextContent(type="text", text=f"Daily note not found: {str(e)}")]
+                except ValueError as e:
+                    return [TextContent(type="text", text=f"Invalid parameters: {str(e)}")]
 
             else:
                 return [
