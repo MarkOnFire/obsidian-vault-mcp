@@ -1,5 +1,7 @@
 """Vault operations for reading and searching Obsidian notes."""
 
+import base64
+import logging
 import re
 import tempfile
 import shutil
@@ -8,6 +10,8 @@ from pathlib import Path
 from typing import List, Optional, Dict, Any
 
 import frontmatter
+
+logger = logging.getLogger("obsidian_vault_mcp")
 
 from .config import VaultConfig, get_para_location, is_excluded
 from .parser import Note, parse_note, resolve_wikilink
@@ -681,3 +685,216 @@ class VaultReader:
             sanitized = sanitized[:max_length].rstrip()
 
         return sanitized
+
+    def add_attachment(
+        self,
+        source_path: Optional[str] = None,
+        base64_content: Optional[str] = None,
+        filename: Optional[str] = None,
+        link_to_note: Optional[str] = None,
+        link_text: Optional[str] = None,
+        embed: bool = False,
+    ) -> Dict[str, Any]:
+        """
+        Add an attachment to the vault's attachment folder (Archive).
+
+        Either source_path OR (base64_content AND filename) must be provided.
+
+        Args:
+            source_path: Path to file on disk to copy
+            base64_content: Base64-encoded file content
+            filename: Filename for base64 content (required if using base64)
+            link_to_note: Note title or path to append the link to
+            link_text: Display text for the link (defaults to filename)
+            embed: If True, use ![[]] syntax for embedding (images render inline)
+
+        Returns:
+            Dictionary with attachment info and link format
+
+        Raises:
+            ValueError: If invalid parameters or unsupported file type
+            FileNotFoundError: If source_path doesn't exist
+            FileExistsError: If attachment already exists in vault
+        """
+        # Validate inputs
+        if not source_path and not base64_content:
+            raise ValueError("Must provide either source_path or base64_content")
+
+        if base64_content and not filename:
+            raise ValueError("filename is required when using base64_content")
+
+        # Determine source and target
+        if source_path:
+            source = Path(source_path).expanduser().resolve()
+            if not source.exists():
+                raise FileNotFoundError(f"Source file not found: {source}")
+
+            attachment_name = source.name
+            file_extension = source.suffix.lstrip('.').lower()
+            file_size = source.stat().st_size
+        else:
+            attachment_name = filename
+            file_extension = Path(filename).suffix.lstrip('.').lower()
+            # Decode to check size
+            try:
+                decoded = base64.b64decode(base64_content)
+                file_size = len(decoded)
+            except Exception as e:
+                raise ValueError(f"Invalid base64 content: {e}")
+
+        # Validate file type
+        if file_extension not in self.config.supported_attachment_types:
+            raise ValueError(
+                f"Unsupported file type: .{file_extension}. "
+                f"Supported: {', '.join(self.config.supported_attachment_types)}"
+            )
+
+        # Validate file size
+        max_bytes = self.config.max_attachment_size_mb * 1024 * 1024
+        if file_size > max_bytes:
+            raise ValueError(
+                f"File too large: {file_size / (1024*1024):.1f}MB. "
+                f"Maximum: {self.config.max_attachment_size_mb}MB"
+            )
+
+        # Build target path
+        attachment_folder = self.config.vault_path / self.config.attachment_folder
+        attachment_folder.mkdir(parents=True, exist_ok=True)
+        target_path = attachment_folder / attachment_name
+
+        # Check for existing attachment
+        if target_path.exists():
+            raise FileExistsError(f"Attachment already exists: {target_path}")
+
+        # Copy or write file
+        try:
+            if source_path:
+                shutil.copy2(source, target_path)
+            else:
+                with open(target_path, 'wb') as f:
+                    f.write(decoded)
+
+            logger.info(f"Added attachment: {target_path}")
+
+        except Exception as e:
+            # Clean up on failure
+            if target_path.exists():
+                target_path.unlink()
+            raise OSError(f"Failed to write attachment: {e}")
+
+        # Generate wikilink
+        # Obsidian uses just the filename for attachments
+        display_text = link_text or attachment_name
+        if embed:
+            wikilink = f"![[{attachment_name}]]"
+        else:
+            if link_text and link_text != attachment_name:
+                wikilink = f"[[{attachment_name}|{link_text}]]"
+            else:
+                wikilink = f"[[{attachment_name}]]"
+
+        result = {
+            "success": True,
+            "path": str(target_path),
+            "filename": attachment_name,
+            "size_bytes": file_size,
+            "wikilink": wikilink,
+            "embed_link": f"![[{attachment_name}]]",
+        }
+
+        # Append link to note if specified
+        if link_to_note:
+            try:
+                append_result = self._append_link_to_note(
+                    note_ref=link_to_note,
+                    link=wikilink,
+                )
+                result["linked_to_note"] = append_result
+            except Exception as e:
+                logger.warning(f"Failed to append link to note: {e}")
+                result["link_error"] = str(e)
+
+        return result
+
+    def _append_link_to_note(
+        self,
+        note_ref: str,
+        link: str,
+        section_header: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Append a link to an existing note.
+
+        Args:
+            note_ref: Note title or path
+            link: The wikilink to append
+            section_header: Optional section header to add link under
+
+        Returns:
+            Dictionary with note info
+
+        Raises:
+            ValueError: If note not found
+        """
+        # Find the note
+        note = None
+
+        # Try as path first
+        if '/' in note_ref or note_ref.endswith('.md'):
+            path = Path(note_ref)
+            if not path.is_absolute():
+                path = self.config.vault_path / note_ref
+            note = self.index.get_note_by_path(path)
+
+        # Try as title
+        if not note:
+            note = self.index.get_note_by_title(note_ref)
+
+        if not note:
+            raise ValueError(f"Note not found: {note_ref}")
+
+        # Read current content
+        file_path = note.path
+        with open(file_path, "r", encoding="utf-8") as f:
+            existing_content = f.read()
+
+        # Parse to preserve frontmatter
+        parsed = frontmatter.loads(existing_content)
+
+        # Build the content to append
+        if section_header:
+            append_content = f"\n\n## {section_header}\n\n{link}"
+        else:
+            append_content = f"\n\n{link}"
+
+        # Append
+        parsed.content = parsed.content.rstrip() + append_content
+
+        # Write back atomically
+        temp_fd, temp_path = tempfile.mkstemp(
+            suffix=".md",
+            dir=file_path.parent,
+            text=True
+        )
+        try:
+            with open(temp_fd, "w", encoding="utf-8") as f:
+                f.write(frontmatter.dumps(parsed))
+            shutil.move(temp_path, file_path)
+        except Exception:
+            try:
+                Path(temp_path).unlink()
+            except OSError:
+                pass
+            raise
+
+        # Refresh note in index
+        refreshed = parse_note(file_path)
+        if refreshed:
+            self.index.notes[refreshed.title.lower()] = refreshed
+            self.index.notes_by_path[file_path] = refreshed
+
+        return {
+            "note_title": note.title,
+            "note_path": str(file_path),
+            "link_added": link,
+        }

@@ -51,6 +51,22 @@ class VaultConfig(BaseModel):
         description="Date format for daily note filenames (strftime format)"
     )
 
+    # Attachment configuration
+    attachment_folder: str = Field(
+        default="4 - ARCHIVE",
+        description="Folder for attachments (relative to vault root)"
+    )
+
+    supported_attachment_types: List[str] = Field(
+        default=["pdf", "png", "jpg", "jpeg", "gif", "webp", "svg", "mp3", "mp4", "wav", "mov"],
+        description="Allowed file extensions for attachments"
+    )
+
+    max_attachment_size_mb: int = Field(
+        default=100,
+        description="Maximum attachment file size in megabytes"
+    )
+
     class Config:
         extra = "allow"
 

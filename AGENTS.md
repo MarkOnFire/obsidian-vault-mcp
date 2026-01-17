@@ -4,7 +4,7 @@ This file provides guidance to AI coding agents working in this repository.
 
 ## Repository Purpose
 
-Obsidian Vault MCP Server provides AI agents with read-only access to Obsidian vaults. It enables reading notes, searching content, following wikilinks, and querying metadata with PARA methodology awareness.
+Obsidian Vault MCP Server provides AI agents with access to Obsidian vaults. It enables reading notes, searching content, following wikilinks, querying metadata, creating notes, and adding attachments - all with PARA methodology awareness.
 
 ## Architecture Overview
 
@@ -68,13 +68,33 @@ Get aggregated task statistics for all notes in a folder.
 ### `obsidian_get_project_activity`
 Get activity summary for each project note in a folder.
 
+### `obsidian_get_weekly_summary`
+Get vault activity summary for a time period (default: last 7 days).
+
+### `obsidian_gather_topic`
+Gather all information on a topic from the vault with backlinks.
+
+### `obsidian_create_daily_note`
+Create or append to a daily note in the configured daily notes folder.
+
+### `obsidian_create_inbox_note`
+Create a new note in the INBOX folder for later processing.
+
+### `obsidian_add_attachment`
+Add an attachment (PDF, image, etc.) to the Archive folder. Supports:
+- Copying from local file path
+- Saving base64-encoded content
+- Auto-appending wikilink to a specified note
+- Embed syntax for images (`![[]]`)
+
 ## Coding Conventions
 
 - Python 3.9+ with type hints
 - Use pathlib for all path operations
 - Handle various markdown formats gracefully
 - Respect PARA folder structure conventions
-- Read-only operations only (no writes to vault)
+- Write operations use atomic file operations (temp file → rename)
+- Write operations limited to INBOX and Archive folders
 
 ## Testing Guidelines
 
@@ -119,7 +139,12 @@ Create `config.json` for advanced configuration:
     "resources": "3 - Resources",
     "archive": "4 - Archive"
   },
-  "exclude_folders": [".obsidian", ".trash"]
+  "exclude_folders": [".obsidian", ".trash"],
+  "daily_notes_folder": "0 - INBOX",
+  "daily_notes_format": "%Y-%m-%d",
+  "attachment_folder": "4 - ARCHIVE",
+  "supported_attachment_types": ["pdf", "png", "jpg", "jpeg", "gif", "webp", "svg", "mp3", "mp4", "wav", "mov"],
+  "max_attachment_size_mb": 100
 }
 ```
 

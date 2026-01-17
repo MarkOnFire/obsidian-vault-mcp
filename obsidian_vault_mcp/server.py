@@ -7,7 +7,7 @@ from typing import Any, List, Optional
 
 from mcp.server import Server
 from mcp.types import Tool, TextContent, Resource
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from .config import VaultConfig, load_config
 from .vault import VaultReader
@@ -96,6 +96,14 @@ class ListNotesParams(BaseModel):
         description="Maximum number of results"
     )
 
+    @field_validator('tags', mode='before')
+    @classmethod
+    def coerce_tags(cls, v):
+        """Accept comma-separated string or array for tags."""
+        if isinstance(v, str):
+            return [t.strip() for t in v.split(',') if t.strip()]
+        return v
+
 
 class GetBacklinksParams(BaseModel):
     """Parameters for obsidian_get_backlinks tool."""
@@ -182,6 +190,14 @@ class CreateDailyNoteParams(BaseModel):
         description="If True, append content to existing daily note instead of failing"
     )
 
+    @field_validator('tags', mode='before')
+    @classmethod
+    def coerce_tags(cls, v):
+        """Accept comma-separated string or array for tags."""
+        if isinstance(v, str):
+            return [t.strip() for t in v.split(',') if t.strip()]
+        return v
+
 
 class CreateInboxNoteParams(BaseModel):
     """Parameters for obsidian_create_inbox_note tool."""
@@ -196,6 +212,43 @@ class CreateInboxNoteParams(BaseModel):
     tags: Optional[List[str]] = Field(
         None,
         description="Tags to add to the note (without # prefix)"
+    )
+
+    @field_validator('tags', mode='before')
+    @classmethod
+    def coerce_tags(cls, v):
+        """Accept comma-separated string or array for tags."""
+        if isinstance(v, str):
+            return [t.strip() for t in v.split(',') if t.strip()]
+        return v
+
+
+class AddAttachmentParams(BaseModel):
+    """Parameters for obsidian_add_attachment tool."""
+
+    source_path: Optional[str] = Field(
+        None,
+        description="Path to file on disk to copy (e.g., ~/Downloads/document.pdf)"
+    )
+    base64_content: Optional[str] = Field(
+        None,
+        description="Base64-encoded file content (alternative to source_path)"
+    )
+    filename: Optional[str] = Field(
+        None,
+        description="Filename for base64 content (required if using base64_content)"
+    )
+    link_to_note: Optional[str] = Field(
+        None,
+        description="Note title or path to append the attachment link to"
+    )
+    link_text: Optional[str] = Field(
+        None,
+        description="Display text for the link (defaults to filename)"
+    )
+    embed: bool = Field(
+        False,
+        description="Use ![[]] syntax for embedding (images render inline)"
     )
 
 
@@ -319,6 +372,17 @@ def create_server(config: VaultConfig) -> Server:
                     "Automatically adds PARA location 'inbox' and created date to frontmatter."
                 ),
                 inputSchema=CreateInboxNoteParams.model_json_schema(),
+            ),
+            Tool(
+                name="obsidian_add_attachment",
+                description=(
+                    "Add an attachment (PDF, image, etc.) to the vault's Archive folder. "
+                    "Provide either source_path (file on disk) OR base64_content + filename. "
+                    "Optionally specify link_to_note to auto-append a wikilink to the attachment in a note. "
+                    "Use embed=true for images to render inline with ![[]] syntax. "
+                    "Returns the wikilink format and file info."
+                ),
+                inputSchema=AddAttachmentParams.model_json_schema(),
             ),
         ]
 
@@ -877,6 +941,63 @@ def create_server(config: VaultConfig) -> Server:
                         TextContent(
                             type="text",
                             text=f"Invalid title: {str(e)}"
+                        )
+                    ]
+
+            elif name == "obsidian_add_attachment":
+                params = AddAttachmentParams(**arguments)
+
+                try:
+                    result = vault.add_attachment(
+                        source_path=params.source_path,
+                        base64_content=params.base64_content,
+                        filename=params.filename,
+                        link_to_note=params.link_to_note,
+                        link_text=params.link_text,
+                        embed=params.embed,
+                    )
+
+                    # Format response
+                    response = f"# Attachment Added\n\n"
+                    response += f"**Filename**: {result['filename']}\n"
+                    response += f"**Path**: {result['path']}\n"
+                    response += f"**Size**: {result['size_bytes']:,} bytes\n\n"
+                    response += f"## Links\n\n"
+                    response += f"**Wikilink**: `{result['wikilink']}`\n"
+                    response += f"**Embed**: `{result['embed_link']}`\n"
+
+                    if result.get('linked_to_note'):
+                        linked = result['linked_to_note']
+                        response += f"\n## Linked to Note\n\n"
+                        response += f"**Note**: {linked['note_title']}\n"
+                        response += f"**Path**: {linked['note_path']}\n"
+                        response += f"**Link Added**: `{linked['link_added']}`\n"
+
+                    if result.get('link_error'):
+                        response += f"\n## Warning\n\n"
+                        response += f"Failed to link to note: {result['link_error']}\n"
+
+                    return [TextContent(type="text", text=response)]
+
+                except FileNotFoundError as e:
+                    return [
+                        TextContent(
+                            type="text",
+                            text=f"File not found: {str(e)}"
+                        )
+                    ]
+                except FileExistsError as e:
+                    return [
+                        TextContent(
+                            type="text",
+                            text=f"Attachment already exists: {str(e)}"
+                        )
+                    ]
+                except ValueError as e:
+                    return [
+                        TextContent(
+                            type="text",
+                            text=f"Invalid parameters: {str(e)}"
                         )
                     ]
 
