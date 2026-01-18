@@ -223,6 +223,37 @@ class CreateInboxNoteParams(BaseModel):
         return v
 
 
+class CreateNoteParams(BaseModel):
+    """Parameters for obsidian_create_note tool."""
+
+    title: str = Field(
+        description="Note title (will be used as filename)"
+    )
+    para_location: str = Field(
+        description="PARA location: 'projects', 'areas', 'resources', or 'archive'"
+    )
+    content: str = Field(
+        default="",
+        description="Note content (markdown)"
+    )
+    subfolder: Optional[str] = Field(
+        None,
+        description="Subfolder within the PARA location (e.g., 'PBSWI' or 'brainstorming/Ideas')"
+    )
+    tags: Optional[List[str]] = Field(
+        None,
+        description="Tags to add to the note (without # prefix)"
+    )
+
+    @field_validator('tags', mode='before')
+    @classmethod
+    def coerce_tags(cls, v):
+        """Accept comma-separated string or array for tags."""
+        if isinstance(v, str):
+            return [t.strip() for t in v.split(',') if t.strip()]
+        return v
+
+
 class AddAttachmentParams(BaseModel):
     """Parameters for obsidian_add_attachment tool."""
 
@@ -424,6 +455,16 @@ def create_server(config: VaultConfig) -> Server:
                     "Automatically adds PARA location 'inbox' and created date to frontmatter."
                 ),
                 inputSchema=CreateInboxNoteParams.model_json_schema(),
+            ),
+            Tool(
+                name="obsidian_create_note",
+                description=(
+                    "Create a new note in a specific PARA location (projects, areas, resources, archive). "
+                    "Use this for automation workflows where notes should be placed directly in their final location. "
+                    "Optionally specify a subfolder within the PARA location (e.g., 'PBSWI' or 'brainstorming/Ideas'). "
+                    "For quick captures that need processing later, use obsidian_create_inbox_note instead."
+                ),
+                inputSchema=CreateNoteParams.model_json_schema(),
             ),
             Tool(
                 name="obsidian_add_attachment",
@@ -1024,6 +1065,43 @@ def create_server(config: VaultConfig) -> Server:
                         TextContent(
                             type="text",
                             text=f"Invalid title: {str(e)}"
+                        )
+                    ]
+
+            elif name == "obsidian_create_note":
+                params = CreateNoteParams(**arguments)
+
+                try:
+                    result = vault.create_note(
+                        title=params.title,
+                        para_location=params.para_location,
+                        content=params.content,
+                        subfolder=params.subfolder,
+                        tags=params.tags,
+                    )
+
+                    # Format response
+                    response = f"# Created Note\n\n"
+                    response += f"**Title**: {result['title']}\n"
+                    response += f"**Path**: {result['path']}\n"
+                    response += f"**PARA**: {result['para_location']}\n"
+                    if result.get('subfolder'):
+                        response += f"**Subfolder**: {result['subfolder']}\n"
+
+                    return [TextContent(type="text", text=response)]
+
+                except FileExistsError as e:
+                    return [
+                        TextContent(
+                            type="text",
+                            text=f"Note already exists: {str(e)}"
+                        )
+                    ]
+                except ValueError as e:
+                    return [
+                        TextContent(
+                            type="text",
+                            text=f"Invalid parameters: {str(e)}"
                         )
                     ]
 

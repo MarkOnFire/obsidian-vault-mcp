@@ -662,6 +662,97 @@ class VaultReader:
             "action": "created",
         }
 
+    def create_note(
+        self,
+        title: str,
+        para_location: str,
+        content: str = "",
+        subfolder: Optional[str] = None,
+        tags: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        """
+        Create a new note in a specified PARA location.
+
+        This method allows creating notes directly in projects, areas, resources,
+        or archive folders, optionally within a subfolder. Useful for automation
+        workflows where notes should be placed directly in their final location.
+
+        Args:
+            title: Note title (will be used as filename)
+            para_location: PARA location - one of "projects", "areas", "resources", "archive"
+            content: Note content (markdown)
+            subfolder: Optional subfolder path within the PARA location (e.g., "PBSWI" or "brainstorming/Ideas")
+            tags: Optional tags to add
+
+        Returns:
+            Dictionary with created note info
+
+        Raises:
+            FileExistsError: If note with same title exists at target location
+            ValueError: If title is invalid or para_location is not allowed
+        """
+        # Validate para_location (inbox not allowed - use create_inbox_note for that)
+        allowed_locations = ["projects", "areas", "resources", "archive"]
+        if para_location not in allowed_locations:
+            raise ValueError(
+                f"Invalid para_location: {para_location}. "
+                f"Must be one of: {', '.join(allowed_locations)}. "
+                f"Use create_inbox_note() for inbox."
+            )
+
+        # Sanitize title for filename
+        safe_title = self._sanitize_filename(title)
+        if not safe_title:
+            raise ValueError(f"Invalid note title: {title}")
+
+        # Get the PARA folder path from config
+        para_folder = self.config.para_folders.get(para_location)
+        if not para_folder:
+            raise ValueError(f"PARA folder not configured for: {para_location}")
+
+        # Build target path
+        target_folder = self.config.vault_path / para_folder
+        if subfolder:
+            # Sanitize subfolder path (allow / for nested folders)
+            safe_subfolder = subfolder.strip("/")
+            # Basic security check - no parent directory traversal
+            if ".." in safe_subfolder:
+                raise ValueError(f"Invalid subfolder path: {subfolder}")
+            target_folder = target_folder / safe_subfolder
+
+        # Ensure target folder exists
+        target_folder.mkdir(parents=True, exist_ok=True)
+
+        file_path = target_folder / f"{safe_title}.md"
+
+        # Check if file already exists
+        if file_path.exists():
+            raise FileExistsError(f"Note already exists: {file_path}")
+
+        # Build metadata
+        metadata = {
+            "created": datetime.now().strftime("%Y-%m-%d"),
+            "para": para_location,
+        }
+        if tags:
+            metadata["tags"] = tags
+
+        # Create the note
+        self._write_note_atomic(file_path, content, metadata)
+
+        # Build relative path for response
+        rel_path = file_path.relative_to(self.config.vault_path)
+
+        return {
+            "success": True,
+            "path": str(rel_path),
+            "full_path": str(file_path),
+            "title": safe_title,
+            "para_location": para_location,
+            "subfolder": subfolder,
+            "action": "created",
+        }
+
     def _sanitize_filename(self, title: str) -> str:
         """
         Sanitize a title for use as a filename.

@@ -26,8 +26,46 @@ The server supports these write operations:
 |------|---------|
 | `obsidian_create_daily_note` | Create/append to daily notes in INBOX |
 | `obsidian_create_inbox_note` | Create new notes in INBOX for processing |
+| `obsidian_create_note` | Create notes directly in projects/areas/resources/archive |
 | `obsidian_add_attachment` | Add PDFs/images to Archive with auto-linking |
 | `obsidian_update_daily_note` | Update sections with modification preservation |
+
+#### Direct Note Creation (Automation Workflows)
+
+Use `obsidian_create_note` when syncing from external sources or automation workflows where notes should go directly to their final location:
+
+```python
+# Create a project note
+obsidian_create_note(
+    title="API Redesign",
+    para_location="projects",
+    subfolder="PBSWI",
+    content="# API Redesign\n\nProject notes...",
+    tags=["project", "api"]
+)
+# Result: 1 - Projects/PBSWI/API Redesign.md
+
+# Create a brainstorm note
+obsidian_create_note(
+    title="Voice UI Ideas",
+    para_location="projects",
+    subfolder="brainstorming",
+    content="# Voice UI Ideas\n\n- Idea 1..."
+)
+# Result: 1 - Projects/brainstorming/Voice UI Ideas.md
+
+# Create an area note
+obsidian_create_note(
+    title="Team Standup Notes",
+    para_location="areas",
+    subfolder="Work/Meetings"
+)
+# Result: 2 - AREAS/Work/Meetings/Team Standup Notes.md
+```
+
+**When to use which tool:**
+- `obsidian_create_inbox_note` - Quick captures, ideas, content needing review
+- `obsidian_create_note` - Automation, sync workflows, notes with known destination
 
 ### Daily Journal Tools
 
@@ -122,7 +160,9 @@ obsidian_add_attachment(
 
 ### Security Considerations
 
-- Write operations limited to INBOX and Archive folders
+- Write operations limited to configured PARA folders (no arbitrary paths)
+- `create_note` validates para_location and blocks `..` path traversal
+- Subfolders are created automatically if they don't exist
 - No network access required
 - Local execution only
 - Safe file operations with atomic writes
