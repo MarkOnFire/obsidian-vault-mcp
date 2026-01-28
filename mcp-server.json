@@ -1,0 +1,5 @@
+{
+  "env": {
+    "OBSIDIAN_VAULT_PATH": "${HOME}/Library/Mobile Documents/iCloud~md~obsidian/Documents/MarkBrain"
+  }
+}
