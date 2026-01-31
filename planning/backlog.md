@@ -1,19 +1,14 @@
-# Maintenance Backlog
+# Session Scratchpad
 
-Items are worked incrementally. Any agent can pick up work.
+Quick-capture area for items discovered during work.
+**Rule**: Create a GitHub Issue for each item before ending your session, then clear this section.
 
-## High Priority
-
-(none)
-
-## Normal Priority
+## Captured This Session
+<!-- Items below must become GitHub Issues before session ends -->
 
 (none)
 
-## Low Priority / Nice to Have
+## Issue Reference
+<!-- Recently created issues for quick context. Cleared monthly. -->
 
 (none)
-
-## Completed (Recent)
-
-(none yet)
