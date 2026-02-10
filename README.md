@@ -2,123 +2,205 @@
 
 [![Build](https://github.com/MarkOnFire/obsidian-vault-mcp/actions/workflows/build.yml/badge.svg)](https://github.com/MarkOnFire/obsidian-vault-mcp/actions/workflows/build.yml)
 
-Model Context Protocol (MCP) server that provides Claude for Desktop with read access to your Obsidian vault.
+A [Model Context Protocol](https://modelcontextprotocol.io/) (MCP) server that gives AI assistants full read and write access to your [Obsidian](https://obsidian.md/) vault. Built with first-class support for the [PARA method](https://fortelabs.com/blog/para/) and the [Obsidian Tasks](https://publish.obsidian.md/tasks/Introduction) plugin.
 
 ## Features
 
-- **Read Notes**: Access any note's content by path or title
-- **Search Content**: Full-text search across all notes
-- **List Notes**: Browse by folder, PARA location, or tags
-- **Query Metadata**: Filter by frontmatter properties, tags, dates
-- **Follow Links**: Resolve wikilinks and find backlinks
-- **PARA-Aware**: Understands your PARA organizational structure
-- **Task Stats**: Get aggregated task statistics for project folders
+### Read & Search
+- **Read Notes** -- Access any note by path or title, with optional wikilink resolution
+- **Full-Text Search** -- Search across all notes with contextual snippets
+- **List & Filter** -- Browse notes by PARA location, folder, tags, or date ranges
+- **Backlinks & Wikilinks** -- Discover which notes link to a given note and resolve wikilinks
+- **Task Statistics** -- Aggregated task stats per folder: completed, active, blocked, overdue, due soon
+- **Project Activity** -- Per-project breakdown with staleness detection (no activity in 7 days)
+- **Weekly Summary** -- Vault-wide activity report: completions by day, by project, overdue items
+- **Topic Gathering** -- Collect everything related to a topic across the vault, grouped by PARA
 
-## Tools Provided
+### Write & Create
+- **Create Notes** -- Place notes directly in any PARA location with optional subfolders
+- **Inbox Capture** -- Quick-capture notes to INBOX for later processing
+- **Daily Notes** -- Create or append to daily notes with automatic frontmatter
+- **Attachments** -- Add PDFs, images, and other files to the vault with auto-linking to notes
 
-### `obsidian_read_note`
+### Daily Journal
+- **Unarchived Note Detection** -- Find daily notes not yet filed into month folders
+- **Task Extraction** -- Parse tasks from daily notes with section context and completion metadata
+- **Smart Section Updates** -- Update daily note sections while preserving user modifications via hash-based change detection
+
+## Tools
+
+The server exposes 16 MCP tools organized into four categories.
+
+### Read Tools
+
+#### `obsidian_read_note`
 Read the full content of a note by path or title.
 
-**Parameters**:
-- `path` (optional): Absolute or vault-relative path
-- `title` (optional): Note title (searches if multiple matches)
-- `resolve_links` (optional): Include linked note titles in response
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `path` | string | — | Absolute or vault-relative path |
+| `title` | string | — | Note title (case-insensitive) |
+| `resolve_links` | boolean | `false` | Include linked note titles in response |
 
-**Example**:
-```json
-{
-  "title": "Project Dashboard",
-  "resolve_links": true
-}
-```
+At least one of `path` or `title` is required.
 
-### `obsidian_search_notes`
-Search note contents with full-text search.
+#### `obsidian_search_notes`
+Full-text search across note contents.
 
-**Parameters**:
-- `query`: Search term or phrase
-- `para_location` (optional): Filter by PARA (inbox, projects, areas, resources, archive)
-- `folder` (optional): Limit to specific folder
-- `limit` (optional): Maximum results (default: 20)
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `query` | string | *required* | Search term or phrase |
+| `para_location` | string | — | Filter by PARA location |
+| `folder` | string | — | Limit to a specific folder |
+| `limit` | integer | `20` | Maximum results |
+| `include_snippets` | boolean | `false` | Include matching text with surrounding context |
 
-**Example**:
-```json
-{
-  "query": "meeting notes",
-  "para_location": "projects",
-  "limit": 10
-}
-```
+#### `obsidian_list_notes`
+List notes matching specific criteria. Returns metadata without full content.
 
-### `obsidian_list_notes`
-List notes by folder, PARA location, or tags.
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `para_location` | string | — | Filter: `inbox`, `projects`, `areas`, `resources`, `archive` |
+| `folder` | string | — | Specific folder path |
+| `tags` | string[] | — | Tags to match (AND logic) |
+| `created_after` | string | — | ISO date (`YYYY-MM-DD`) |
+| `created_before` | string | — | ISO date |
+| `modified_after` | string | — | ISO date |
+| `modified_before` | string | — | ISO date |
+| `limit` | integer | `50` | Maximum results |
 
-**Parameters**:
-- `para_location` (optional): Filter by PARA location
-- `folder` (optional): Specific folder path
-- `tags` (optional): Array of tags (AND logic)
-- `created_after` (optional): ISO date string
-- `created_before` (optional): ISO date string
-- `limit` (optional): Maximum results (default: 50)
+#### `obsidian_get_backlinks`
+Find all notes that contain wikilinks to a specific note.
 
-**Example**:
-```json
-{
-  "para_location": "projects",
-  "tags": ["work"],
-  "limit": 20
-}
-```
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `note_title` | string | *required* | Title of the target note |
 
-### `obsidian_get_backlinks`
-Find all notes that link to a specific note.
+#### `obsidian_resolve_link`
+Resolve a wikilink to its target note and return metadata.
 
-**Parameters**:
-- `note_title`: Title of the note to find backlinks for
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `link` | string | *required* | Wikilink text (e.g., `[[Project Dashboard]]` or `Project Dashboard`) |
 
-**Example**:
-```json
-{
-  "note_title": "Project Dashboard"
-}
-```
+### Analytics Tools
 
-### `obsidian_resolve_link`
-Resolve a wikilink to its target note.
+#### `obsidian_get_task_stats`
+Aggregated task statistics for all notes in a folder. Parses Obsidian Tasks plugin syntax including due dates, priorities, completion dates, and blocked status.
 
-**Parameters**:
-- `link`: Wikilink text (e.g., "[[Project Dashboard]]" or just "Project Dashboard")
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `folder_path` | string | *required* | Folder to scan (e.g., `1 - Projects/PBSWI`) |
+| `lookback_days` | integer | `7` | Days to look back for recent completions |
 
-**Example**:
-```json
-{
-  "link": "Project Dashboard"
-}
-```
+#### `obsidian_get_project_activity`
+Per-project activity summary. Identifies stale projects with no activity in the last 7 days.
 
-### `obsidian_get_task_stats`
-Get aggregated task statistics for all notes in a folder.
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `folder_path` | string | *required* | Project folder to scan |
 
-**Parameters**:
-- `folder_path`: Folder to scan for tasks
-- `lookback_days` (optional): Days to look back for recent completions (default: 7)
+#### `obsidian_get_weekly_summary`
+Summary of vault activity for a time period. Returns completions by day, by project, overdue tasks, and active task counts.
 
-### `obsidian_get_project_activity`
-Get activity summary for each project note in a folder.
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `start_date` | string | 7 days ago | Start date (`YYYY-MM-DD`) |
+| `end_date` | string | today | End date (`YYYY-MM-DD`) |
+| `para_location` | string | — | Filter by PARA location |
 
-**Parameters**:
-- `folder_path`: Project folder to scan
+#### `obsidian_gather_topic`
+Gather all information on a topic from the vault. Searches by content and tags, includes backlinks, and groups results by PARA location.
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `topic` | string | *required* | Search term, tag, or note title |
+| `include_backlinks` | boolean | `true` | Include notes that link to matching notes |
+
+### Write Tools
+
+#### `obsidian_create_note`
+Create a note in a specific PARA location with optional subfolder placement.
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `title` | string | *required* | Note title (used as filename) |
+| `para_location` | string | *required* | `projects`, `areas`, `resources`, or `archive` |
+| `content` | string | `""` | Markdown content |
+| `subfolder` | string | — | Subfolder within the PARA location (e.g., `PBSWI`) |
+| `tags` | string[] | — | Tags (without `#` prefix) |
+
+#### `obsidian_create_inbox_note`
+Quick-capture a note to the INBOX folder for later processing.
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `title` | string | *required* | Note title (used as filename) |
+| `content` | string | `""` | Markdown content |
+| `tags` | string[] | — | Tags (without `#` prefix) |
+
+#### `obsidian_create_daily_note`
+Create or append to a daily note. Stored in the configured daily notes folder.
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `content` | string | `""` | Markdown content |
+| `date` | string | today | Date in `YYYY-MM-DD` format |
+| `tags` | string[] | — | Tags (without `#` prefix) |
+| `append_if_exists` | boolean | `false` | Append to existing note instead of failing |
+
+#### `obsidian_add_attachment`
+Add a file (PDF, image, etc.) to the vault's attachment folder. Optionally link it to an existing note.
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `source_path` | string | — | Path to file on disk |
+| `base64_content` | string | — | Base64-encoded file content (alternative to `source_path`) |
+| `filename` | string | — | Filename (required when using `base64_content`) |
+| `link_to_note` | string | — | Note title or path to append the wikilink to |
+| `link_text` | string | — | Display text for the link |
+| `embed` | boolean | `false` | Use `![[]]` syntax so images render inline |
+
+Either `source_path` or `base64_content` + `filename` is required.
+
+### Daily Journal Tools
+
+#### `obsidian_get_unarchived_daily_notes`
+Find daily journal notes that haven't been moved to month subfolders yet.
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `exclude_today` | boolean | `true` | Exclude today's note from results |
+
+#### `obsidian_extract_note_tasks`
+Extract tasks from a note with checked/unchecked status, section context, and metadata.
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `note_path` | string | *required* | Path to the note (absolute or vault-relative) |
+| `sections` | string[] | — | Specific sections to extract from (e.g., `["Action Items"]`). Extracts all if omitted. |
+
+#### `obsidian_update_daily_note`
+Update specific sections of a daily note while preserving user-modified content. Uses HTML comment markers (`<!-- SECTION:name:START -->` / `<!-- SECTION:name:END -->`) and hash-based modification detection.
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `date` | string | *required* | Date (`YYYY-MM-DD`) |
+| `sections` | object | *required* | Map of section names to new content |
+| `preserve_modified` | boolean | `true` | Skip sections the user has manually edited |
+| `create_if_missing` | boolean | `false` | Create the note from a template if it doesn't exist |
+| `template` | string | — | Template string for new notes (required if `create_if_missing` is true and the note doesn't exist) |
 
 ## Installation
 
-### 1. Clone the Repository
+### 1. Clone the repository
 
 ```bash
 git clone https://github.com/MarkOnFire/obsidian-vault-mcp.git
 cd obsidian-vault-mcp
 ```
 
-### 2. Install Dependencies
+### 2. Install dependencies
 
 ```bash
 python3 -m venv venv
@@ -128,17 +210,18 @@ pip install -r requirements.txt
 
 ### 3. Configure Claude for Desktop
 
-Add to `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) or the equivalent config location on your platform:
+Add the server to your Claude Desktop config file:
+
+- **macOS**: `~/Library/Application Support/Claude/claude_desktop_config.json`
+- **Linux**: `~/.config/claude/claude_desktop_config.json`
+- **Windows**: `%APPDATA%\Claude\claude_desktop_config.json`
 
 ```json
 {
   "mcpServers": {
     "obsidian-vault": {
       "command": "/path/to/obsidian-vault-mcp/venv/bin/python",
-      "args": [
-        "-m",
-        "obsidian_vault_mcp"
-      ],
+      "args": ["-m", "obsidian_vault_mcp"],
       "env": {
         "OBSIDIAN_VAULT_PATH": "/path/to/your/obsidian/vault"
       }
@@ -147,13 +230,11 @@ Add to `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS)
 }
 ```
 
-Replace:
-- `/path/to/obsidian-vault-mcp/` with where you cloned this repo
-- `/path/to/your/obsidian/vault` with your actual Obsidian vault path
+Replace the paths with your actual locations.
 
 ### 4. Restart Claude for Desktop
 
-The tools will be available automatically in your conversations.
+The 16 tools will be available automatically in your conversations.
 
 ## Configuration
 
@@ -162,12 +243,12 @@ The tools will be available automatically in your conversations.
 | Variable | Required | Description |
 |----------|----------|-------------|
 | `OBSIDIAN_VAULT_PATH` | Yes | Absolute path to your Obsidian vault |
-| `OBSIDIAN_VAULT_LOG_LEVEL` | No | Logging level (DEBUG, INFO, WARNING, ERROR) |
+| `OBSIDIAN_VAULT_LOG_LEVEL` | No | Logging level (`DEBUG`, `INFO`, `WARNING`, `ERROR`) |
 | `OBSIDIAN_VAULT_MCP_LOG` | No | Custom log file path |
 
-### Config File (Optional)
+### Config File
 
-Create `config.json` in the server directory for advanced configuration:
+Create `config.json` in the server directory for full control:
 
 ```json
 {
@@ -175,72 +256,90 @@ Create `config.json` in the server directory for advanced configuration:
   "para_folders": {
     "inbox": "0 - INBOX",
     "projects": "1 - Projects",
-    "areas": "2 - Areas",
-    "resources": "3 - Resources",
-    "archive": "4 - Archive"
+    "areas": "2 - AREAS",
+    "resources": "3 - RESOURCES",
+    "archive": "4 - ARCHIVE"
   },
-  "exclude_folders": [
-    ".obsidian",
-    ".trash",
-    "node_modules"
-  ],
-  "max_search_results": 100
+  "exclude_folders": [".obsidian", ".trash", "node_modules"],
+  "max_search_results": 100,
+  "daily_notes_folder": "0 - INBOX",
+  "daily_notes_format": "%Y-%m-%d",
+  "daily_journal_folder": "0 - INBOX/DAILY JOURNAL",
+  "daily_journal_archive_pattern": "JANUARY|FEBRUARY|...|DECEMBER",
+  "attachment_folder": "4 - ARCHIVE",
+  "supported_attachment_types": ["pdf", "png", "jpg", "jpeg", "gif", "webp", "svg", "mp3", "mp4", "wav", "mov"],
+  "max_attachment_size_mb": 100
 }
 ```
 
+All fields except `vault_path` have sensible defaults and can be omitted. Environment variables override config file values.
+
 ## Usage Examples
 
-### In Claude for Desktop
+### Reading and Searching
 
-**Read a specific note**:
-> "Can you read my Project Dashboard note and summarize the current projects?"
+> "Read my Project Dashboard note and summarize the current projects."
 
-**Search for information**:
-> "Search my vault for notes about 'authentication' in the projects folder"
+> "Search my vault for notes about 'authentication' in the projects folder."
 
-**List notes by criteria**:
-> "Show me all notes in my work project folder created this month"
+> "Show me all notes tagged 'work' that were modified in the last week."
 
-**Follow wikilinks**:
-> "Read my Weekly 1-on-1 note and also read any linked project notes"
-
-**Find backlinks**:
 > "Which notes link to my 'Career Development' note?"
 
-**Get task stats**:
+### Analytics
+
 > "What's the task status across my Projects folder?"
 
+> "Give me a weekly summary of what I accomplished."
+
+> "Gather everything I have on the topic of 'machine learning'."
+
+> "Which of my projects are stale?"
+
+### Writing
+
+> "Create a new note called 'API Redesign' in my PBSWI project folder."
+
+> "Capture this idea to my inbox: voice-controlled task management."
+
+> "Add today's daily note with my meeting notes."
+
+> "Attach this PDF to my 'Research Paper' note."
+
+### Daily Journal
+
+> "What daily notes haven't been archived yet?"
+
+> "Extract the unchecked tasks from yesterday's daily note."
+
+> "Update today's daily note calendar section with my meeting schedule."
+
 ## Development
+
+### Running the Server
+
+```bash
+source venv/bin/activate
+python -m obsidian_vault_mcp
+```
 
 ### Running Tests
 
 ```bash
 source venv/bin/activate
-python -m pytest tests/ -v
-```
-
-### Manual Testing
-
-```bash
-# Test as MCP server
-source venv/bin/activate
-python -m obsidian_vault_mcp
-
-# Test individual operations
-OBSIDIAN_VAULT_PATH=/path/to/vault python test_operations.py
+OBSIDIAN_VAULT_PATH=/path/to/test/vault python test_operations.py
+OBSIDIAN_VAULT_PATH=/path/to/test/vault python test_task_stats.py
 ```
 
 ### Logging
 
-Logs are written to `~/.local/share/obsidian-vault-mcp/server.log` by default.
+Logs go to `~/.local/share/obsidian-vault-mcp/server.log` by default.
 
-Override with:
 ```bash
-export OBSIDIAN_VAULT_MCP_LOG=/custom/path/to/server.log
-```
+# Custom log location
+export OBSIDIAN_VAULT_MCP_LOG=/custom/path/server.log
 
-Set log level:
-```bash
+# Verbose logging
 export OBSIDIAN_VAULT_LOG_LEVEL=DEBUG
 ```
 
@@ -249,69 +348,62 @@ export OBSIDIAN_VAULT_LOG_LEVEL=DEBUG
 ```
 obsidian-vault-mcp/
 ├── obsidian_vault_mcp/
-│   ├── __init__.py          # Package initialization
-│   ├── __main__.py          # MCP server entry point
-│   ├── server.py            # MCP server implementation
-│   ├── vault.py             # Vault operations (read, search, index)
-│   ├── parser.py            # Markdown and frontmatter parsing
-│   ├── config.py            # Configuration management
-│   └── tasks.py             # Task statistics operations
-├── requirements.txt         # Python dependencies
-├── setup.py                 # Package setup
-├── setup.sh                 # Quick setup script
-└── README.md                # This file
+│   ├── __init__.py        # Package exports
+│   ├── __main__.py        # Entry point
+│   ├── server.py          # MCP server, tool definitions, and request handling
+│   ├── vault.py           # Vault index, read/write operations, daily journal ops
+│   ├── parser.py          # Markdown parsing, frontmatter extraction, wikilink resolution
+│   ├── config.py          # Configuration loading and PARA path utilities
+│   └── tasks.py           # Task parsing (Obsidian Tasks syntax), stats, activity reports
+├── requirements.txt
+├── setup.py
+└── setup.sh               # Quick setup script
 ```
 
-## Security Considerations
+**Key classes:**
 
-- **Local Only**: Runs locally, no network access required
-- **Vault Integrity**: Uses safe file operations with proper encoding
+- `VaultConfig` (config.py) -- Pydantic model holding all configuration with validation
+- `VaultIndex` (vault.py) -- In-memory note index for O(1) title lookups and fast search
+- `VaultReader` (vault.py) -- High-level API for all vault operations (read, search, write, journal)
+- `Note` (parser.py) -- Parsed note with metadata, tags, PARA location, and content
+- `TaskParser` / `TaskStats` (tasks.py) -- Obsidian Tasks plugin syntax parsing and aggregation
+
+## Security
+
+- **Local execution only** -- No network access; the server runs entirely on your machine
+- **PARA folder restriction** -- Write operations are limited to configured PARA folders
+- **Path traversal protection** -- `..` sequences are rejected in subfolder paths
+- **Atomic file writes** -- Notes are written to a temp file then renamed, preventing partial writes
+- **File type validation** -- Attachments are checked against a configurable allowlist of extensions
+- **File size limits** -- Attachments are capped at a configurable maximum (default: 100 MB)
 
 ## Troubleshooting
 
-### Server Not Appearing in Claude
+### Server not appearing in Claude
 
-1. Check Claude Desktop config is valid JSON
+1. Verify the Claude Desktop config is valid JSON
 2. Restart Claude for Desktop completely
-3. Check logs: `~/.local/share/obsidian-vault-mcp/server.log`
-4. Verify vault path is correct and accessible
+3. Check logs at `~/.local/share/obsidian-vault-mcp/server.log`
+4. Confirm the vault path exists and is accessible
 
-### Search Not Finding Notes
+### Search not finding notes
 
-1. Ensure notes have proper markdown extensions (.md)
-2. Check `exclude_folders` config isn't filtering them out
-3. Verify notes contain readable text (not just frontmatter)
+1. Notes must have `.md` extensions
+2. Check that `exclude_folders` isn't filtering them out
+3. Verify notes contain text content (not just frontmatter)
 
-### Permission Errors
+### Permission errors
 
-1. Ensure vault path is readable
-2. Check iCloud sync status (vault must be downloaded locally)
-3. Verify Python has disk access permissions (System Preferences → Security on macOS)
+1. Ensure the vault path is readable (and writable, for write tools)
+2. iCloud-synced vaults must be downloaded locally before use
+3. On macOS, grant Python disk access in System Preferences > Security & Privacy
 
-## Contributing
+### Write operations failing
 
-Contributions welcome! Please open an issue or PR.
+1. Confirm the target PARA folder exists in your vault
+2. Check that the note title doesn't contain invalid filename characters
+3. For attachments, verify the file type is in `supported_attachment_types`
 
 ## License
 
-MIT License
-
-Copyright (c) 2026 Mark Riechers
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+MIT License -- Copyright (c) 2026 Mark Riechers. See [LICENSE](LICENSE) for details.
