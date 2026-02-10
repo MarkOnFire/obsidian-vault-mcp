@@ -298,7 +298,7 @@ Contributions welcome! Please open an issue or PR.
 
 MIT License
 
-Copyright (c) 2024 Mark Riechers
+Copyright (c) 2026 Mark Riechers
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
