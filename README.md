@@ -264,8 +264,6 @@ obsidian-vault-mcp/
 
 ## Security Considerations
 
-- **Read-Only**: This server provides read-only access to your vault
-- **No Modifications**: Cannot create, edit, or delete notes
 - **Local Only**: Runs locally, no network access required
 - **Vault Integrity**: Uses safe file operations with proper encoding
 
